@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "gg.arkship.herdr-ready",
+  "name": "Herdr Ready",
+  "version": "0.1.0",
+  "author": "Andrew Dunne",
+  "description": "A dot in the bar counting the herdr agents waiting for you, across every herdr session on this computer and on your SSH hosts; click it for the list and jump to one",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "HerdrReady.qml"
+  },
+  "barWidget": {
+    "displayName": "Herdr Ready",
+    "description": "Number of herdr agents waiting for you; click for the list, grouped by session",
+    "category": "AI",
+    "defaultSection": "left",
+    "allowMultiple": false,
+    "defaults": {
+      "remotes": ""
+    },
+    "schema": [
+      {
+        "key": "remotes",
+        "type": "string",
+        "label": "Remote hosts",
+        "defaultValue": "",
+        "description": "SSH targets whose herdr sessions are watched too, separated by spaces or commas, e.g. drewdunne@server. SSH must work without a password prompt."
+      }
+    ]
+  }
+}

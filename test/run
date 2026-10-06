@@ -1,0 +1,29 @@
+#!/bin/bash
+# Runs every test: unit tests, the setup block round trip, and (with herdr installed) the
+# end-to-end test against a throwaway herdr session.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+python3 -m unittest -v test.test_watcher test.test_integration
+bash test/test_setup.sh
+omarchy plugin validate "$PWD" >/dev/null 2>&1 && echo "omarchy plugin validate: ok" || {
+  command -v omarchy >/dev/null && { echo "omarchy plugin validate failed" >&2; exit 1; } || true
+}
+
+# QML check, on an Omarchy machine only: qmllint resolves the shell's `qs.*` modules through a
+# folder literally named `qs`, so the installed shell is borrowed through a link. Categories it
+# can't judge without the running shell are switched off; syntax and real type errors fail.
+qmllint=$(command -v qmllint || ls /usr/lib/qt6/bin/qmllint 2>/dev/null || true)
+shell_dir=/usr/share/omarchy/shell
+if [[ -n $qmllint && -d $shell_dir ]]; then
+  link_dir=$(mktemp -d)
+  trap 'rm -rf "$link_dir"' EXIT
+  ln -s "$shell_dir" "$link_dir/qs"
+  args=(-I "$link_dir" -I /usr/lib/qt6/qml)
+  for category in unqualified missing-property import unused-imports deprecated signal-handler-parameters; do
+    "$qmllint" --help 2>&1 | grep -q -- "--$category" && args+=("--$category" disable)
+  done
+  "$qmllint" "${args[@]}" -W 0 ./*.qml
+  echo "qmllint: ok"
+else
+  echo "qmllint or the Omarchy shell not found; QML not checked"
+fi

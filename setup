@@ -1,0 +1,270 @@
+#!/bin/bash
+
+# Set up Herdr Ready on this machine. Run it from the installed plugin folder,
+# ~/.config/omarchy/plugins/gg.arkship.herdr-ready/.
+#
+# install [--remote TARGET]...  load the hotkey from ~/.config/hypr/hyprland.lua, add the
+#                               dot to the bar after the workspace numbers, and watch the
+#                               herdr sessions on each SSH TARGET too
+# hotkey "SUPER + J"            change the hotkey (default SUPER + H)
+# uninstall                     remove everything install added, and the plugin itself
+# status                        show what is installed and what the helper sees
+
+set -euo pipefail
+
+ID="gg.arkship.herdr-ready"
+PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+HELPER="$PLUGIN_DIR/bin/herdr-ready"
+HYPR_CONFIG="$HOME/.config/hypr/hyprland.lua"
+SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
+CONFIG_DIR="$HOME/.config/herdr-ready"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-ready"
+DEFAULT_KEY="SUPER + H"
+BEGIN_MARK=">>> $ID >>>"
+END_MARK="<<< $ID <<<"
+ANCHOR='require("default.hypr.omarchy")'
+
+usage() {
+  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+die() {
+  echo "setup: $*" >&2
+  exit 1
+}
+
+backup() {
+  local copy
+  copy="$1.bak.$(date +%s)"
+  cp "$1" "$copy"
+  echo "Backed up $1 to $copy"
+}
+
+has_block() {
+  [[ -f $HYPR_CONFIG ]] && grep -qF -- "-- $BEGIN_MARK" "$HYPR_CONFIG"
+}
+
+hypr_block() {
+  cat <<LUA
+-- $BEGIN_MARK
+-- Herdr Ready: a hotkey (SUPER + H unless ~/.config/herdr-ready/hotkey says otherwise)
+-- opens the list of herdr agents waiting for you. Run the plugin's \`setup uninstall\` to remove.
+do
+  local path = os.getenv("HOME") .. "/.config/omarchy/plugins/$ID/hypr/herdr-ready.lua"
+  local file = io.open(path, "r")
+  if file then
+    file:close()
+    dofile(path)
+  end
+end
+-- $END_MARK
+LUA
+}
+
+insert_block() {
+  local tmp
+  tmp=$(mktemp)
+  BLOCK="$(hypr_block)" ANCHOR_TEXT="$ANCHOR" awk '
+    { print }
+    !done && index($0, ENVIRON["ANCHOR_TEXT"]) { print ""; print ENVIRON["BLOCK"]; done = 1 }
+    END { if (!done) exit 3 }
+  ' "$HYPR_CONFIG" >"$tmp" || { rm -f "$tmp"; die "could not find $ANCHOR in $HYPR_CONFIG"; }
+  cat "$tmp" >"$HYPR_CONFIG"
+  rm -f "$tmp"
+}
+
+remove_block() {
+  local tmp
+  tmp=$(mktemp)
+  BEGIN_LINE="-- $BEGIN_MARK" END_LINE="-- $END_MARK" awk '
+    { line = $0 }
+    line == ENVIRON["BEGIN_LINE"] { skipping = 1; pending = 0; next }
+    skipping { if (line == ENVIRON["END_LINE"]) skipping = 0; next }
+    $0 == "" { if (pending) print ""; pending = 1; next }
+    { if (pending) print ""; pending = 0; print }
+    END { if (pending) print "" }
+  ' "$HYPR_CONFIG" >"$tmp"
+  cat "$tmp" >"$HYPR_CONFIG"
+  rm -f "$tmp"
+}
+
+reload_hyprland() {
+  hyprctl reload >/dev/null
+  local errors
+  errors=$(hyprctl configerrors 2>/dev/null | grep -v '^\s*$' || true)
+  if [[ -n $errors ]]; then
+    echo "Hyprland reported config errors:" >&2
+    echo "$errors" >&2
+    return 1
+  fi
+}
+
+current_key() {
+  local key=""
+  [[ -f $CONFIG_DIR/hotkey ]] && key=$(head -n1 "$CONFIG_DIR/hotkey" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  echo "${key:-$DEFAULT_KEY}"
+}
+
+# Hyprland's modifier mask for "SUPER + CTRL + H" style keys, and the key itself.
+key_mask() {
+  local mask=0 part
+  IFS='+' read -ra parts <<<"$1"
+  for part in "${parts[@]}"; do
+    part=$(echo "$part" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+    case $part in
+      SHIFT) mask=$((mask | 1)) ;;
+      CAPS) mask=$((mask | 2)) ;;
+      CTRL | CONTROL) mask=$((mask | 4)) ;;
+      ALT) mask=$((mask | 8)) ;;
+      SUPER | WIN | LOGO | MOD4) mask=$((mask | 64)) ;;
+    esac
+  done
+  echo "$mask"
+}
+
+key_name() {
+  echo "${1##*+}" | tr -d '[:space:]'
+}
+
+# Prints what else, if anything, the key is bound to.
+key_taken_by() {
+  local mask name
+  mask=$(key_mask "$1")
+  name=$(key_name "$1")
+  hyprctl binds -j 2>/dev/null | jq -r --argjson mask "$mask" --arg key "$name" '
+    .[] | select(.modmask == $mask and (.key | ascii_upcase) == ($key | ascii_upcase))
+        | select((.arg // "") | contains("gg.arkship.herdr-ready") | not)
+        | (.description // .arg)'
+}
+
+check_key_free() {
+  local taken
+  taken=$(key_taken_by "$1")
+  [[ -z $taken ]] || die "$1 is already bound to: $taken. Pick another: setup hotkey \"SUPER + J\""
+}
+
+widget_enabled() {
+  jq -e --arg id "$ID" '[.bar.layout[][]?.id] | index($id)' "$SHELL_CONFIG" >/dev/null 2>&1
+}
+
+enable_widget() {
+  local placement=(--section left)
+  if jq -e '[.bar.layout[][]?.id] | index("omarchy.workspaces")' "$SHELL_CONFIG" >/dev/null 2>&1; then
+    placement=(--after omarchy.workspaces)
+  fi
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  for _ in {1..20}; do
+    omarchy plugin enable "$ID" "${placement[@]}" >/dev/null 2>&1 && return 0
+    sleep 0.25
+  done
+  die "could not enable the bar widget; try: omarchy plugin enable $ID"
+}
+
+check_tools() {
+  local missing=() tool
+  for tool in python3 hyprctl jq ssh omarchy-shell; do
+    command -v "$tool" >/dev/null || missing+=("$tool")
+  done
+  ((${#missing[@]} == 0)) || die "missing ${missing[*]}"
+  command -v herdr >/dev/null || echo "Note: herdr isn't on PATH here; the list will be empty until it is."
+}
+
+check_location() {
+  [[ $PLUGIN_DIR == "$HOME/.config/omarchy/plugins/$ID" ]] ||
+    die "run setup from the installed plugin, $HOME/.config/omarchy/plugins/$ID (see README)"
+}
+
+cmd_install() {
+  local remotes=()
+  while (($#)); do
+    case $1 in
+      --remote) [[ $# -ge 2 ]] || die "--remote needs an SSH target"; remotes+=("$2"); shift 2 ;;
+      --remote=*) remotes+=("${1#--remote=}"); shift ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  check_tools
+  check_location
+  chmod +x "$HELPER" "$PLUGIN_DIR/setup"
+
+  check_key_free "$(current_key)"
+  if has_block; then
+    echo "Hotkey already loaded from $HYPR_CONFIG"
+  else
+    backup "$HYPR_CONFIG"
+    insert_block
+    reload_hyprland
+    echo "Hotkey $(current_key) loaded from $HYPR_CONFIG"
+  fi
+
+  if widget_enabled; then
+    echo "Bar dot already enabled"
+  else
+    enable_widget
+    echo "Bar dot added after the workspace numbers"
+  fi
+
+  if ((${#remotes[@]})); then
+    local target
+    for target in "${remotes[@]}"; do
+      if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$target" true 2>/dev/null; then
+        echo "Warning: 'ssh $target' doesn't work without a prompt yet; its sessions show as unreachable until it does."
+      fi
+    done
+    omarchy bar set "$ID" remotes "${remotes[*]}" >/dev/null
+    echo "Watching remote hosts: ${remotes[*]}"
+  fi
+  echo "Done. Press $(current_key), or click the dot, to see agents waiting for you."
+}
+
+cmd_hotkey() {
+  [[ $# -eq 1 && -n $1 ]] || die 'usage: setup hotkey "SUPER + J"'
+  check_key_free "$1"
+  mkdir -p "$CONFIG_DIR"
+  echo "$1" >"$CONFIG_DIR/hotkey"
+  has_block || die "the hotkey isn't loaded yet; run: setup install"
+  reload_hyprland
+  echo "Hotkey is now $1"
+}
+
+cmd_uninstall() {
+  if has_block; then
+    backup "$HYPR_CONFIG"
+    remove_block
+    reload_hyprland || true
+    echo "Removed the hotkey from $HYPR_CONFIG"
+  fi
+  rm -rf "$CONFIG_DIR" "$STATE_DIR"
+  if [[ -d $HOME/.config/omarchy/plugins/$ID ]]; then
+    # Disables the dot, takes it out of the shell and deletes the plugin folder.
+    omarchy plugin remove "$ID" --yes
+  fi
+  echo "Herdr Ready is removed."
+}
+
+cmd_status() {
+  echo "Plugin:  $PLUGIN_DIR"
+  if has_block; then echo "Hotkey:  $(current_key) (loaded from $HYPR_CONFIG)"; else echo "Hotkey:  not loaded"; fi
+  if widget_enabled; then
+    echo "Bar dot: enabled"
+    echo "Remotes: $(jq -r --arg id "$ID" '[.bar.layout[][]? | select(.id == $id) | .remotes // ""][0] // ""' "$SHELL_CONFIG")"
+  else
+    echo "Bar dot: not in the bar"
+  fi
+  local remotes
+  remotes=$(jq -r --arg id "$ID" '[.bar.layout[][]? | select(.id == $id) | .remotes // ""][0] // ""' "$SHELL_CONFIG" 2>/dev/null || true)
+  echo
+  if [[ -n $remotes ]]; then "$HELPER" list --remote "$remotes"; else "$HELPER" list; fi
+}
+
+# Sourcing this file (the tests do) only defines the functions above.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+
+case ${1:-} in
+  install) shift; cmd_install "$@" ;;
+  hotkey) shift; cmd_hotkey "$@" ;;
+  uninstall) shift; cmd_uninstall ;;
+  status) shift; cmd_status ;;
+  -h | --help | help | "") usage ;;
+  *) usage; exit 1 ;;
+esac

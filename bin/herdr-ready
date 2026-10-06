@@ -1,0 +1,746 @@
+#!/usr/bin/env python3
+"""herdr-ready: the herdr agents waiting for you, across every session on every machine.
+
+  herdr-ready watch [--remote TARGET]...   stream the list as JSON, one line per change
+                                           (the bar widget runs this); reads commands on
+                                           stdin: `go <key>`, `first`, `refresh`
+  herdr-ready list [--remote TARGET]...    print the list once and exit
+  herdr-ready windows                      print which window shows which herdr session
+  herdr-ready plan TARGET SESSION          print what going to that session would do
+                                           (TARGET is `local` or an SSH target)
+
+What "waiting for you" means (see README): an agent starts waiting when it leaves
+`working` (finished, or asking a question), and stops when you have had it in front
+of you for a second (its tab shown in the herdr window that has focus on your
+desktop), when you go to it from the list, or when it starts working again. An agent
+asking a question stays on the list until it is answered, except while it is in
+front of you.
+
+Every machine is read by herdr_ready_relay.py: run directly here, and over SSH on
+remote targets (its source travels with the command; nothing is installed there).
+"""
+
+import argparse
+import base64
+import json
+import os
+import queue
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+RELAY = os.path.join(HERE, "herdr_ready_relay.py")
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr-ready")
+STATE_FILE = os.path.join(STATE_DIR, "waiting.json")
+LOCAL = "local"
+SEEN_AFTER = 1.0          # seconds an agent must be in front of you to count as seen
+TICK = 0.5
+WINDOW_RESCAN = 15.0
+RETRY_MAX = 60.0
+FINISHED_STATES = ("done", "idle")
+
+
+def log(*parts):
+    sys.stderr.write("herdr-ready: " + " ".join(str(p) for p in parts) + "\n")
+    sys.stderr.flush()
+
+
+# ---------------------------------------------------------------- hosts
+
+_identity_cache = {}
+
+
+def ssh_identity(target):
+    """user@hostname:port as SSH resolves TARGET, so `server` and `drewdunne@server` match."""
+    if target in _identity_cache:
+        return _identity_cache[target]
+    values = {}
+    try:
+        out = subprocess.run(["ssh", "-G", target], capture_output=True, text=True, timeout=5,
+                             stdin=subprocess.DEVNULL).stdout
+        for line in out.splitlines():
+            key, _, value = line.partition(" ")
+            if key in ("user", "hostname", "port"):
+                values[key] = value.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if values.get("hostname"):
+        identity = "%s@%s:%s" % (values.get("user", ""), values["hostname"].lower(), values.get("port", "22"))
+    else:
+        identity = target
+    _identity_cache[target] = identity
+    return identity
+
+
+def short_label(target):
+    """`drewdunne@server.example.ts.net` -> `server`."""
+    host = target.split("@")[-1]
+    if host.startswith("[") and "]" in host:
+        return host[1:host.index("]")]
+    return host.split(":")[0].split(".")[0]
+
+
+def relay_command(target):
+    if target is None:
+        return [sys.executable, "-u", RELAY]
+    with open(RELAY, "rb") as handle:
+        source = base64.b64encode(handle.read()).decode()
+    bootstrap = ("python3 -u -c 'import base64,sys;exec(compile(base64.b64decode(sys.argv[1]),"
+                 "\"herdr-ready-relay\",\"exec\"))' " + source)
+    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", target, bootstrap]
+
+
+class Host(threading.Thread):
+    """One machine: keeps its relay running and passes its messages on."""
+
+    def __init__(self, key, label, target, events):
+        threading.Thread.__init__(self, daemon=True)
+        self.key = key
+        self.label = label
+        self.target = target
+        self.events = events
+        self.proc = None
+        self.lock = threading.Lock()
+        self.ok = False
+        self.error = ""
+        self.since = time.time()
+
+    def send(self, message):
+        with self.lock:
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return False
+            try:
+                proc.stdin.write(json.dumps(message) + "\n")
+                proc.stdin.flush()
+                return True
+            except (OSError, ValueError):
+                return False
+
+    def run(self):
+        delay = 5.0
+        while True:
+            started = time.time()
+            stderr_tail = []
+            try:
+                proc = subprocess.Popen(relay_command(self.target), stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, bufsize=1)
+            except OSError as error:
+                proc = None
+                stderr_tail.append(str(error))
+            if proc is not None:
+                with self.lock:
+                    self.proc = proc
+
+                def drain(stream, tail):
+                    for line in stream:
+                        line = line.strip()
+                        if line:
+                            tail.append(line)
+                            del tail[:-3]
+                threading.Thread(target=drain, args=(proc.stderr, stderr_tail), daemon=True).start()
+                for line in proc.stdout:
+                    try:
+                        message = json.loads(line)
+                    except ValueError:
+                        continue
+                    if message.get("type") == "hello":
+                        self.ok = True
+                        self.error = ""
+                        self.since = time.time()
+                        delay = 5.0
+                    self.events.put(("relay", self.key, message))
+                proc.wait()
+                time.sleep(0.2)  # let the stderr reader finish
+            reason = stderr_tail[-1] if stderr_tail else "connection closed"
+            if "Permission denied" in reason or "Host key verification failed" in reason:
+                reason = "SSH needs you to log in (run: ssh %s)" % self.target
+            if self.ok or not self.error:
+                self.since = time.time()
+            self.ok = False
+            self.error = reason
+            self.events.put(("down", self.key, reason))
+            if time.time() - started > 60:
+                delay = 5.0
+            time.sleep(delay)
+            delay = min(delay * 2, RETRY_MAX)
+
+
+# ---------------------------------------------------------------- desktop
+
+def hyprctl(*args, timeout=3):
+    try:
+        return subprocess.run(["hyprctl"] + list(args), capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def hypr_json(what):
+    try:
+        return json.loads(hyprctl(what, "-j") or "null")
+    except ValueError:
+        return None
+
+
+def norm_address(address):
+    address = str(address or "").strip().lower()
+    return address[2:] if address.startswith("0x") else address
+
+
+def process_table():
+    """{pid: (parent pid, argv, environ HERDR_SESSION or None)} for this user's processes."""
+    table = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % entry, "rb") as handle:
+                stat = handle.read().decode("utf-8", "replace")
+            parent = int(stat[stat.rindex(")") + 2:].split()[1])
+            with open("/proc/%s/cmdline" % entry, "rb") as handle:
+                argv = [a.decode("utf-8", "replace") for a in handle.read().split(b"\0") if a]
+        except (OSError, ValueError, IndexError):
+            continue
+        table[int(entry)] = (parent, argv)
+    return table
+
+
+def herdr_session_env(pid):
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as handle:
+            for item in handle.read().split(b"\0"):
+                if item.startswith(b"HERDR_SESSION="):
+                    return item.split(b"=", 1)[1].decode("utf-8", "replace") or None
+    except OSError:
+        pass
+    return None
+
+
+def parse_client(args, env_session=None):
+    """(remote target or None, session) for a herdr TUI client's arguments, else None."""
+    if len(args) >= 3 and args[0] == "session" and args[1] == "attach":
+        return (None, args[2])
+    session = None
+    remote = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--session", "--remote", "--remote-keybindings") and i + 1 < len(args):
+            if arg == "--session":
+                session = args[i + 1]
+            elif arg == "--remote":
+                remote = args[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--session="):
+            session = arg.split("=", 1)[1]
+        elif arg.startswith("--remote="):
+            remote = arg.split("=", 1)[1]
+        elif arg.startswith("--remote-keybindings=") or arg == "--handoff":
+            pass
+        else:
+            return None  # a subcommand (server, client, api, agent, …) or something unknown
+        i += 1
+    if session is None and remote is None:
+        session = env_session
+    return (remote, session or "default")
+
+
+def window_map(host_key_for):
+    """{address: {"address", "workspace", "focus_rank", "clients": [(host key, session)]}}."""
+    clients = hypr_json("clients") or []
+    by_pid = {}
+    windows = {}
+    for client in clients:
+        address = norm_address(client.get("address"))
+        workspace = (client.get("workspace") or {}).get("id")
+        windows[address] = {"address": address, "workspace": workspace,
+                            "focus_rank": client.get("focusHistoryID", 999), "clients": []}
+        by_pid.setdefault(client.get("pid"), []).append(address)
+    table = process_table()
+    for pid, (parent, argv) in table.items():
+        if not argv or os.path.basename(argv[0]) != "herdr":
+            continue
+        parsed = parse_client(argv[1:], herdr_session_env(pid))
+        if parsed is None:
+            continue
+        remote, session = parsed
+        host = LOCAL if remote is None else host_key_for(remote)
+        seen = set()
+        current = pid
+        while current and current not in seen:
+            seen.add(current)
+            if current in by_pid:
+                if len(by_pid[current]) == 1:  # a terminal process that owns one window
+                    windows[by_pid[current][0]]["clients"].append((host, session))
+                break
+            current = table.get(current, (0, []))[0]
+    return windows
+
+
+def active_workspace():
+    data = hypr_json("activeworkspace") or {}
+    return data.get("id")
+
+
+def focus_window(address):
+    out = hyprctl("dispatch", 'hl.dsp.focus({ window = "address:0x%s" })' % address)
+    if out.strip() != "ok":
+        hyprctl("dispatch", "focuswindow", "address:0x%s" % address)
+
+
+def choose_window(candidates, workspace):
+    here = [w for w in candidates if w["workspace"] == workspace]
+    pool = here or candidates
+    return sorted(pool, key=lambda w: w["focus_rank"])[0]
+
+
+def hyprland_events(events):
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not signature or not runtime:
+        return
+    path = os.path.join(runtime, "hypr", signature, ".socket2.sock")
+    while True:
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(path)
+            buf = b""
+            while True:
+                chunk = sock.recv(1 << 16)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    name, _, data = line.decode("utf-8", "replace").partition(">>")
+                    if name in ("activewindowv2", "openwindow", "closewindow", "movewindowv2"):
+                        events.put(("hypr", name, data))
+        except OSError:
+            pass
+        time.sleep(2)
+
+
+# ---------------------------------------------------------------- the list
+
+class Watcher:
+    def __init__(self, remotes, seen_after=SEEN_AFTER):
+        self.events = queue.Queue()
+        self.seen_after = seen_after
+        self.hosts = {}
+        self.host_order = [LOCAL]
+        self.hosts[LOCAL] = Host(LOCAL, "this computer", None, self.events)
+        self.targets = {}
+        for target in remotes:
+            key = ssh_identity(target)
+            if key in self.hosts:
+                continue
+            self.hosts[key] = Host(key, short_label(target), target, self.events)
+            self.targets[key] = target
+            self.host_order.append(key)
+        self.sessions = {}      # (host, session) -> {"focus": {...}, "agents": {pane: agent}}
+        self.stash = {}         # sessions of a host that reconnected, until they report again
+        self.waiting = {}       # key -> since
+        self.in_view = {}       # key -> first seen in view
+        self.visible = set()
+        self.windows = {}
+        self.windows_at = 0.0
+        self.active = None
+        self.last_output = None
+        self.dirty = True
+        self.save_due = None
+        self.restored = self.load()
+        self.out_lock = threading.Lock()
+
+    # ------------------------------------------------------------ state file
+    def load(self):
+        try:
+            with open(STATE_FILE) as handle:
+                data = json.load(handle)
+            return {k: float(v) for k, v in (data.get("waiting") or {}).items()}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def save(self):
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w") as handle:
+                json.dump({"waiting": self.waiting}, handle)
+            os.replace(tmp, STATE_FILE)
+        except OSError as error:
+            log("could not save state:", error)
+
+    # ------------------------------------------------------------ helpers
+    def host_key_for(self, target):
+        return ssh_identity(target)
+
+    @staticmethod
+    def key(host, session, pane):
+        return "%s|%s|%s" % (host, session, pane)
+
+    def start_waiting(self, key, since=None):
+        if key not in self.waiting:
+            self.waiting[key] = since or time.time()
+            self.changed()
+
+    def stop_waiting(self, key):
+        if self.waiting.pop(key, None) is not None:
+            self.changed()
+
+    def changed(self):
+        self.dirty = True
+        if self.save_due is None:
+            self.save_due = time.time() + 2.0
+
+    def refresh_windows(self):
+        self.windows = window_map(self.host_key_for)
+        self.windows_at = time.time()
+        self.dirty = True
+
+    # ------------------------------------------------------------ events
+    def on_session(self, host, message):
+        name = message.get("session")
+        sk = (host, name)
+        prev = self.sessions.get(sk) or self.stash.pop(sk, None)
+        agents = {}
+        for agent in message.get("agents") or []:
+            agents[agent.get("pane")] = agent
+        for pane, agent in agents.items():
+            key = self.key(host, name, pane)
+            status = agent.get("status")
+            before = (prev or {}).get("agents", {}).get(pane) if prev else None
+            if status == "working":
+                self.stop_waiting(key)
+            elif prev is None:
+                # First look at this session since the watcher started.
+                if status in ("blocked", "done"):
+                    self.start_waiting(key, self.restored.get(key))
+                elif status == "idle" and key in self.restored:
+                    self.start_waiting(key, self.restored[key])
+            elif before is None:
+                if status in ("blocked", "done"):
+                    self.start_waiting(key)
+            else:
+                old = before.get("status")
+                if status in ("blocked",) + FINISHED_STATES and status != old \
+                        and not (old == "done" and status == "idle"):
+                    self.start_waiting(key)
+        if prev:
+            for pane in prev.get("agents", {}):
+                if pane not in agents:
+                    self.stop_waiting(self.key(host, name, pane))
+        self.sessions[sk] = {"focus": message.get("focus") or {}, "agents": agents}
+        self.dirty = True
+
+    def on_relay(self, host, message):
+        kind = message.get("type")
+        if kind == "hello":
+            for sk in [sk for sk in self.sessions if sk[0] == host]:
+                self.stash[sk] = self.sessions.pop(sk)
+            self.dirty = True
+        elif kind == "session":
+            self.on_session(host, message)
+        elif kind == "gone":
+            sk = (host, message.get("session"))
+            data = self.sessions.pop(sk, None) or self.stash.pop(sk, None)
+            for pane in (data or {}).get("agents", {}):
+                self.stop_waiting(self.key(host, sk[1], pane))
+            self.dirty = True
+
+    def on_hypr(self, name, data):
+        if name == "activewindowv2":
+            self.active = norm_address(data) or None
+            if self.active and self.active not in self.windows:
+                self.refresh_windows()
+            # herdr learns which window is in front from the terminal's focus report;
+            # read the sessions again so their focused pane reflects it.
+            for host in self.hosts.values():
+                host.send({"op": "refresh"})
+        else:
+            self.refresh_windows()
+        self.dirty = True
+
+    # ------------------------------------------------------------ in view
+    def update_view(self):
+        visible = set()
+        window = self.windows.get(self.active) if self.active else None
+        for host, name in (window or {}).get("clients", []):
+            if host in self.hosts and not self.hosts[host].ok:
+                continue
+            session = self.sessions.get((host, name))
+            if not session:
+                continue
+            tab = (session.get("focus") or {}).get("tab")
+            if not tab:
+                continue
+            for pane, agent in session["agents"].items():
+                if agent.get("tab") == tab:
+                    visible.add(self.key(host, name, pane))
+        now = time.time()
+        for key in list(self.in_view):
+            if key not in visible:
+                del self.in_view[key]
+        for key in visible:
+            since = self.in_view.setdefault(key, now)
+            if key in self.waiting and now - since >= self.seen_after:
+                host, name, pane = key.split("|", 2)
+                agent = self.sessions.get((host, name), {}).get("agents", {}).get(pane) or {}
+                if agent.get("status") != "blocked":
+                    self.stop_waiting(key)
+        if visible != self.visible:
+            self.visible = visible
+            self.dirty = True
+
+    # ------------------------------------------------------------ output
+    def state(self):
+        groups = {}
+        for key, since in self.waiting.items():
+            host, name, pane = key.split("|", 2)
+            if host not in self.hosts or not self.hosts[host].ok:
+                continue
+            agent = self.sessions.get((host, name), {}).get("agents", {}).get(pane)
+            if not agent or agent.get("status") == "working":
+                continue
+            blocked = agent.get("status") == "blocked"
+            if blocked and key in self.visible:
+                continue
+            groups.setdefault((host, name), []).append({
+                "key": key, "pane": pane, "agent": agent.get("agent") or "",
+                "name": agent.get("name") or "", "title": agent.get("title") or "",
+                "status": "blocked" if blocked else "finished", "since": round(since),
+            })
+        out = []
+        for (host, name), agents in groups.items():
+            agents.sort(key=lambda a: (a["status"] != "blocked", a["since"]))
+            workspaces = sorted({w["workspace"] for w in self.windows.values()
+                                 if (host, name) in w["clients"] and w["workspace"] is not None})
+            out.append({
+                "host": host, "hostLabel": "" if host == LOCAL else self.hosts[host].label,
+                "session": name, "workspaces": workspaces, "agents": agents,
+            })
+        out.sort(key=lambda g: (not any(a["status"] == "blocked" for a in g["agents"]),
+                                min(a["since"] for a in g["agents"])))
+        hosts = []
+        for key in self.host_order:
+            host = self.hosts[key]
+            hosts.append({
+                "key": key, "label": host.label, "ok": host.ok, "error": host.error,
+                "since": round(host.since),
+                "sessions": sorted(n for (h, n) in self.sessions if h == key),
+            })
+        count = sum(len(g["agents"]) for g in out)
+        blocked = sum(1 for g in out for a in g["agents"] if a["status"] == "blocked")
+        return {"count": count, "blocked": blocked, "groups": out, "hosts": hosts}
+
+    def output(self, force=False):
+        state = self.state()
+        line = json.dumps(state, separators=(",", ":"))
+        if force or line != self.last_output:
+            self.last_output = line
+            with self.out_lock:
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+
+    # ------------------------------------------------------------ going to an agent
+    def first_key(self):
+        state = self.state()
+        return state["groups"][0]["agents"][0]["key"] if state["groups"] else None
+
+    def focus_agent(self, host, session, pane):
+        return self.hosts[host].send({"op": "focus", "session": session, "pane": pane, "id": str(time.time())})
+
+    def go(self, key):
+        try:
+            host, session, pane = key.split("|", 2)
+        except ValueError:
+            return
+        if host not in self.hosts:
+            return
+        self.events.put(("seen", key, None))
+        windows = [w for w in window_map(self.host_key_for).values() if (host, session) in w["clients"]]
+        if windows:
+            window = choose_window(windows, active_workspace())
+            focus_window(window["address"])
+            time.sleep(0.25)  # the terminal reports focus to herdr, which then moves that window
+            self.focus_agent(host, session, pane)
+            return
+        # No window shows this session. Nothing is attached to it, so focusing the agent first
+        # moves no other window, and the new one opens on that agent.
+        self.focus_agent(host, session, pane)
+        time.sleep(0.3)
+        command = ["herdr"]
+        if host != LOCAL:
+            command += ["--remote", self.targets[host]]
+        if session != "default":
+            command += ["--session", session]
+        try:
+            subprocess.Popen(["omarchy-launch-terminal"] + command, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as error:
+            log("could not open a terminal:", error)
+
+    def handle_command(self, line):
+        words = line.split()
+        if not words:
+            return
+        if words[0] == "go" and len(words) == 2:
+            threading.Thread(target=self.go, args=(words[1],), daemon=True).start()
+        elif words[0] == "first":
+            key = self.first_key()
+            if key:
+                threading.Thread(target=self.go, args=(key,), daemon=True).start()
+        elif words[0] == "refresh":
+            for host in self.hosts.values():
+                host.send({"op": "refresh"})
+            self.refresh_windows()
+            self.output(force=True)
+
+    # ------------------------------------------------------------ main loop
+    def start(self, follow_desktop=True):
+        for host in self.hosts.values():
+            host.start()
+        if follow_desktop:
+            threading.Thread(target=hyprland_events, args=(self.events,), daemon=True).start()
+            self.refresh_windows()
+            active = hypr_json("activewindow") or {}
+            self.active = norm_address(active.get("address")) or None
+
+    def step(self, timeout=TICK):
+        try:
+            event = self.events.get(timeout=timeout)
+        except queue.Empty:
+            event = None
+        while event is not None:
+            kind, a, b = event
+            if kind == "relay":
+                self.on_relay(a, b)
+            elif kind == "down":
+                self.dirty = True
+            elif kind == "hypr":
+                self.on_hypr(a, b)
+            elif kind == "seen":
+                self.stop_waiting(a)
+            elif kind == "command":
+                self.handle_command(a)
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                event = None
+        if time.time() - self.windows_at > WINDOW_RESCAN:
+            self.refresh_windows()
+        self.update_view()
+        if self.save_due is not None and time.time() >= self.save_due:
+            self.save_due = None
+            self.save()
+
+    def watch(self):
+        self.start()
+
+        def read_commands():
+            for line in sys.stdin:
+                self.events.put(("command", line.strip(), None))
+            os._exit(0)  # the bar widget went away
+        threading.Thread(target=read_commands, daemon=True).start()
+        while True:
+            self.step()
+            if self.dirty:
+                self.dirty = False
+                self.output()
+
+
+# ---------------------------------------------------------------- commands
+
+def remotes_from(values):
+    remotes = []
+    for value in values or []:
+        for part in value.replace(",", " ").split():
+            if part and part not in remotes:
+                remotes.append(part)
+    return remotes
+
+
+def cmd_list(args):
+    watcher = Watcher(remotes_from(args.remote))
+    watcher.start()
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        watcher.step()
+        if all(h.ok or h.error for h in watcher.hosts.values()) and time.time() > deadline - args.wait + 3:
+            break
+    state = watcher.state()
+    if args.json:
+        print(json.dumps(state, indent=2))
+        return
+    for host in state["hosts"]:
+        status = "ok" if host["ok"] else "can't connect: " + (host["error"] or "starting")
+        print("%s (%s): %s" % (host["label"], status, ", ".join(host["sessions"]) or "no sessions"))
+    print("%d waiting, %d need you" % (state["count"], state["blocked"]))
+    for group in state["groups"]:
+        where = "workspace " + ",".join(str(w) for w in group["workspaces"]) if group["workspaces"] else "no window"
+        label = group["session"] + (" · " + group["hostLabel"] if group["hostLabel"] else "")
+        print("  %s  (%s)" % (label, where))
+        for agent in group["agents"]:
+            print("    %-9s %-6s %s" % ("needs you" if agent["status"] == "blocked" else "finished",
+                                       agent["agent"], agent["name"] or agent["title"]))
+
+
+def cmd_windows(args):
+    for window in window_map(ssh_identity).values():
+        if window["clients"]:
+            for host, session in window["clients"]:
+                print("workspace %-3s 0x%s  %s  %s" % (window["workspace"], window["address"], host, session))
+
+
+def cmd_plan(args):
+    host = LOCAL if args.target == LOCAL else ssh_identity(args.target)
+    windows = [w for w in window_map(ssh_identity).values() if (host, args.session) in w["clients"]]
+    if windows:
+        window = choose_window(windows, active_workspace())
+        print("focus window 0x%s on workspace %s, then focus the agent in session %s"
+              % (window["address"], window["workspace"], args.session))
+    else:
+        command = ["herdr"] + ([] if host == LOCAL else ["--remote", args.target]) + \
+                  ([] if args.session == "default" else ["--session", args.session])
+        print("focus the agent in session %s, then open: omarchy-launch-terminal %s"
+              % (args.session, " ".join(command)))
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="herdr-ready", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="command")
+    watch = sub.add_parser("watch")
+    watch.add_argument("--remote", action="append", help="SSH target to watch (repeat, or comma-separated)")
+    watch.add_argument("--seen-after", type=float, default=SEEN_AFTER)
+    listing = sub.add_parser("list")
+    listing.add_argument("--remote", action="append")
+    listing.add_argument("--json", action="store_true")
+    listing.add_argument("--wait", type=float, default=12.0)
+    sub.add_parser("windows")
+    plan = sub.add_parser("plan")
+    plan.add_argument("target")
+    plan.add_argument("session")
+    args = parser.parse_args()
+    if args.command == "watch":
+        Watcher(remotes_from(args.remote), args.seen_after).watch()
+    elif args.command == "list":
+        cmd_list(args)
+    elif args.command == "windows":
+        cmd_windows(args)
+    elif args.command == "plan":
+        cmd_plan(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
