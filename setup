@@ -15,7 +15,11 @@ set -euo pipefail
 ID="gg.arkship.herdr-ready"
 PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 HELPER="$PLUGIN_DIR/bin/herdr-ready"
-HYPR_CONFIG="$HOME/.config/hypr/hyprland.lua"
+HYPR_MAIN="$HOME/.config/hypr/hyprland.lua"
+# A per-machine file loaded last by hyprland.lua (omarchy-config keeps one per host). When it
+# exists the hotkey goes there, so a hyprland.lua shared between machines stays untouched.
+HYPR_HOST="$HOME/.config/hypr/host.lua"
+if [[ -f $HYPR_HOST ]]; then HYPR_CONFIG=$HYPR_HOST; else HYPR_CONFIG=$HYPR_MAIN; fi
 SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
 CONFIG_DIR="$HOME/.config/herdr-ready"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-ready"
@@ -40,8 +44,19 @@ backup() {
   echo "Backed up $1 to $copy"
 }
 
+# has_block [FILE]: the hotkey block is in FILE (default: the file install writes to).
 has_block() {
-  [[ -f $HYPR_CONFIG ]] && grep -qF -- "-- $BEGIN_MARK" "$HYPR_CONFIG"
+  local file=${1:-$HYPR_CONFIG}
+  [[ -f $file ]] && grep -qF -- "-- $BEGIN_MARK" "$file"
+}
+
+# The file that holds the block now, if any (it may predate host.lua).
+block_file() {
+  local file
+  for file in "$HYPR_HOST" "$HYPR_MAIN"; do
+    has_block "$file" && { echo "$file"; return 0; }
+  done
+  return 1
 }
 
 hypr_block() {
@@ -63,6 +78,10 @@ LUA
 
 insert_block() {
   local tmp
+  if [[ $HYPR_CONFIG != "$HYPR_MAIN" ]]; then
+    printf '\n%s\n' "$(hypr_block)" >>"$HYPR_CONFIG"
+    return
+  fi
   tmp=$(mktemp)
   BLOCK="$(hypr_block)" ANCHOR_TEXT="$ANCHOR" awk '
     { print }
@@ -74,7 +93,7 @@ insert_block() {
 }
 
 remove_block() {
-  local tmp
+  local file=${1:-$HYPR_CONFIG} tmp
   tmp=$(mktemp)
   BEGIN_LINE="-- $BEGIN_MARK" END_LINE="-- $END_MARK" awk '
     { line = $0 }
@@ -83,8 +102,8 @@ remove_block() {
     $0 == "" { if (pending) print ""; pending = 1; next }
     { if (pending) print ""; pending = 0; print }
     END { if (pending) print "" }
-  ' "$HYPR_CONFIG" >"$tmp"
-  cat "$tmp" >"$HYPR_CONFIG"
+  ' "$file" >"$tmp"
+  cat "$tmp" >"$file"   # writes through a link, so a linked config file stays linked
   rm -f "$tmp"
 }
 
@@ -188,8 +207,8 @@ cmd_install() {
   chmod +x "$HELPER" "$PLUGIN_DIR/setup"
 
   check_key_free "$(current_key)"
-  if has_block; then
-    echo "Hotkey already loaded from $HYPR_CONFIG"
+  if block_file >/dev/null; then
+    echo "Hotkey already loaded from $(block_file)"
   else
     backup "$HYPR_CONFIG"
     insert_block
@@ -222,18 +241,19 @@ cmd_hotkey() {
   check_key_free "$1"
   mkdir -p "$CONFIG_DIR"
   echo "$1" >"$CONFIG_DIR/hotkey"
-  has_block || die "the hotkey isn't loaded yet; run: setup install"
+  block_file >/dev/null || die "the hotkey isn't loaded yet; run: setup install"
   reload_hyprland
   echo "Hotkey is now $1"
 }
 
 cmd_uninstall() {
-  if has_block; then
-    backup "$HYPR_CONFIG"
-    remove_block
-    reload_hyprland || true
-    echo "Removed the hotkey from $HYPR_CONFIG"
-  fi
+  local file
+  while file=$(block_file); do
+    backup "$file"
+    remove_block "$file"
+    echo "Removed the hotkey from $file"
+  done
+  reload_hyprland || true
   rm -rf "$CONFIG_DIR" "$STATE_DIR"
   if [[ -d $HOME/.config/omarchy/plugins/$ID ]]; then
     # Disables the dot, takes it out of the shell and deletes the plugin folder.
@@ -244,7 +264,12 @@ cmd_uninstall() {
 
 cmd_status() {
   echo "Plugin:  $PLUGIN_DIR"
-  if has_block; then echo "Hotkey:  $(current_key) (loaded from $HYPR_CONFIG)"; else echo "Hotkey:  not loaded"; fi
+  if block_file >/dev/null; then echo "Hotkey:  $(current_key) (loaded from $(block_file))"; else echo "Hotkey:  not loaded"; fi
+  [[ -z $(key_taken_by "$(current_key)") ]] || echo "Warning: $(current_key) is also bound to: $(key_taken_by "$(current_key)")"
+  hyprctl binds -j 2>/dev/null | jq -e '[.[] | select((.arg // "") | contains("gg.arkship.herdr-ready"))] | length > 0' >/dev/null 2>&1 ||
+    hyprctl binds -j 2>/dev/null | jq -e --argjson m "$(key_mask "$(current_key)")" --arg k "$(key_name "$(current_key)")" \
+      '[.[] | select(.modmask == $m and (.key | ascii_upcase) == ($k | ascii_upcase))] | length > 0' >/dev/null 2>&1 ||
+    echo "Warning: Hyprland has no binding for $(current_key) right now; run: setup install"
   if widget_enabled; then
     echo "Bar dot: enabled"
     echo "Remotes: $(jq -r --arg id "$ID" '[.bar.layout[][]? | select(.id == $id) | .remotes // ""][0] // ""' "$SHELL_CONFIG")"
