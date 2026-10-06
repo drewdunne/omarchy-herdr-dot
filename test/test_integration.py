@@ -76,7 +76,7 @@ class AgainstHerdr(unittest.TestCase):
         try:
             cls.server.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            cls.server.kill()
+            os.killpg(cls.server.pid, 9)
         subprocess.run(["herdr", "session", "delete", NAME], env=ENV, capture_output=True, timeout=10)
         shutil.rmtree(os.path.join(CONFIG, "sessions", NAME), ignore_errors=True)
 
@@ -133,30 +133,73 @@ class AgainstHerdr(unittest.TestCase):
         self.assertEqual(listing().get(self.shown), "blocked")
 
     def test_4_watch_counts_a_finish_herdr_calls_seen(self):
+        import select
         call("pane.focus", {"pane_id": self.shown})  # herdr shows this agent's workspace again
         report(self.shown, "working")
         watch = subprocess.Popen([HELPER, "watch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  text=True, env=ENV)
-        try:
-            def mine():
-                line = watch.stdout.readline()
-                for group in json.loads(line)["groups"]:
+
+        def wait_for(predicate, seconds):
+            """Reads the watcher's lines until predicate(this session's agents) holds."""
+            deadline = time.time() + seconds
+            current = {}
+            while time.time() < deadline:
+                if not select.select([watch.stdout], [], [], 0.5)[0]:
+                    continue
+                state = json.loads(watch.stdout.readline())
+                current = {}
+                for group in state["groups"]:
                     if group["session"] == NAME and group["hostLabel"] == "":
-                        return {a["pane"]: a["status"] for a in group["agents"]}
-                return {}
-            deadline = time.time() + 10
-            current = None
-            while time.time() < deadline and self.hidden not in (current or {}):
-                current = mine()  # the hidden agent is done from earlier tests: listed at once
+                        current = {a["pane"]: a["status"] for a in group["agents"]}
+                if predicate(current):
+                    return current
+            return current
+
+        try:
+            wait_for(lambda agents: True, 10)  # the watcher has read everything once
+            time.sleep(1.5)                     # and its relay has subscribed to the panes
             report(self.shown, "idle")
             self.assertEqual(statuses()[self.shown], "idle", "herdr calls it seen")
-            deadline = time.time() + 10
-            while time.time() < deadline and current.get(self.shown) != "finished":
-                current = mine()
+            current = wait_for(lambda agents: agents.get(self.shown) == "finished", 10)
             self.assertEqual(current.get(self.shown), "finished")
         finally:
             watch.stdin.close()
             watch.wait(timeout=5)
+
+    def test_5_a_new_window_opens_on_the_focused_agent(self):
+        # Going to an agent in a session with no window: the helper focuses the agent first,
+        # then opens a terminal attached to the session. That terminal must start on the agent.
+        import fcntl
+        import pty
+        import re
+        import select
+        import struct
+        import termios
+        call("pane.focus", {"pane_id": self.shown})
+        call("agent.focus", {"target": self.hidden})
+        pid, fd = pty.fork()
+        if pid == 0:
+            env = dict(ENV, TERM="xterm-256color")
+            os.execvpe("herdr", ["herdr", "--session", NAME], env)
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+            titles = []
+            screen = ""
+            deadline = time.time() + 8
+            while time.time() < deadline and not (titles and titles[-1].endswith(": hidden")):
+                ready, _, _ = select.select([fd], [], [], 0.2)
+                if ready:
+                    try:
+                        screen += os.read(fd, 65536).decode("utf-8", "replace")
+                    except OSError:
+                        break
+                    # herdr titles its window "<host>: <workspace>" (OSC 0/2)
+                    titles = re.findall("\x1b\\][02];([^\x07\x1b]*)", screen)
+            self.assertTrue(titles and titles[-1].endswith(": hidden"), titles[-3:])
+        finally:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            os.close(fd)
 
 
 if __name__ == "__main__":

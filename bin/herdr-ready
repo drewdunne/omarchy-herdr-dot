@@ -330,8 +330,9 @@ def hyprland_events(events):
 # ---------------------------------------------------------------- the list
 
 class Watcher:
-    def __init__(self, remotes, seen_after=SEEN_AFTER):
+    def __init__(self, remotes, seen_after=SEEN_AFTER, persist=False):
         self.events = queue.Queue()
+        self.persist = persist  # only the running watcher keeps the state file
         self.seen_after = seen_after
         self.hosts = {}
         self.host_order = [LOCAL]
@@ -368,6 +369,8 @@ class Watcher:
             return {}
 
     def save(self):
+        if not self.persist:
+            return
         try:
             os.makedirs(STATE_DIR, exist_ok=True)
             tmp = STATE_FILE + ".tmp"
@@ -728,7 +731,7 @@ def main():
     plan.add_argument("session")
     args = parser.parse_args()
     if args.command == "watch":
-        Watcher(remotes_from(args.remote), args.seen_after).watch()
+        Watcher(remotes_from(args.remote), args.seen_after, persist=True).watch()
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "windows":
