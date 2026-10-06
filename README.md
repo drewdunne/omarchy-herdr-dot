@@ -48,9 +48,11 @@ git clone https://github.com/drewdunne/omarchy-herdr-ready.git ~/.config/omarchy
 ~/.config/omarchy/plugins/gg.arkship.herdr-ready/setup install --remote drewdunne@server
 ```
 
-`setup install` adds the dot after the workspace numbers, loads the hotkey from
-`~/.config/hypr/hyprland.lua` (a marked block; the file is backed up first), and sets which
-remote hosts to watch. Leave out `--remote` to watch only this computer. Remote hosts need
+`setup install` adds the dot after the workspace numbers, loads the hotkey through a marked
+block (the file is backed up first) in `~/.config/hypr/host.lua` when that per-machine file
+exists (as omarchy-config sets up), otherwise in `~/.config/hypr/hyprland.lua`, and sets which
+remote hosts to watch. If the hotkey ever stops working, `setup status` says whether Hyprland
+still has it, and running `setup install` again puts it back. Leave out `--remote` to watch only this computer. Remote hosts need
 `ssh <host>` to work without a password prompt, and `python3` there. Nothing is installed on
 them: the small program that reads their sessions is sent with the SSH command each time it
 connects.
@@ -69,7 +71,7 @@ omarchy bar set gg.arkship.herdr-ready remotes "drewdunne@server other@box"   # 
 ~/.config/omarchy/plugins/gg.arkship.herdr-ready/setup uninstall
 ```
 
-One step: it takes the hotkey out of `hyprland.lua` (backing it up first), deletes the
+One step: it takes the hotkey out of `host.lua` or `hyprland.lua` (backing it up first), deletes the
 plugin's settings and state, and removes the plugin from the bar and from disk.
 
 ## How it works
