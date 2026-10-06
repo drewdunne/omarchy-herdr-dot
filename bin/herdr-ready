@@ -5,6 +5,9 @@
                                            (the bar widget runs this); reads commands on
                                            stdin: `go <key>`, `first`, `refresh`
   herdr-ready list [--remote TARGET]...    print the list once and exit
+                                           Without --remote, both use the plugin's `remotes`
+                                           setting in Omarchy's shell.json (watch follows
+                                           changes to it); --local-only skips remote hosts
   herdr-ready windows                      print which window shows which herdr session
   herdr-ready plan TARGET SESSION          print what going to that session would do
                                            (TARGET is `local` or an SSH target)
@@ -108,6 +111,13 @@ class Host(threading.Thread):
         self.ok = False
         self.error = ""
         self.since = time.time()
+        self.stopped = threading.Event()
+
+    def stop(self):
+        self.stopped.set()
+        with self.lock:
+            if self.proc is not None and self.proc.poll() is None:
+                self.proc.terminate()
 
     def send(self, message):
         with self.lock:
@@ -123,7 +133,7 @@ class Host(threading.Thread):
 
     def run(self):
         delay = 5.0
-        while True:
+        while not self.stopped.is_set():
             started = time.time()
             stderr_tail = []
             try:
@@ -162,13 +172,35 @@ class Host(threading.Thread):
                 reason = "SSH needs you to log in (run: ssh %s)" % self.target
             if self.ok or not self.error:
                 self.since = time.time()
+            if self.stopped.is_set():
+                return
             self.ok = False
             self.error = reason
             self.events.put(("down", self.key, reason))
             if time.time() - started > 60:
                 delay = 5.0
-            time.sleep(delay)
+            self.stopped.wait(delay)
             delay = min(delay * 2, RETRY_MAX)
+
+
+SHELL_CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                            "omarchy", "shell.json")
+PLUGIN_ID = "gg.arkship.herdr-ready"
+
+
+def configured_remotes(path=SHELL_CONFIG):
+    """The `remotes` setting of this plugin's entry in Omarchy's shell.json, or None if unreadable."""
+    try:
+        with open(path) as handle:
+            config = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    layout = ((config.get("bar") or {}).get("layout") or {})
+    for section in layout.values():
+        for entry in section if isinstance(section, list) else []:
+            if isinstance(entry, dict) and entry.get("id") == PLUGIN_ID:
+                return remotes_from([str(entry.get("remotes") or "")])
+    return []
 
 
 # ---------------------------------------------------------------- desktop
@@ -338,13 +370,10 @@ class Watcher:
         self.host_order = [LOCAL]
         self.hosts[LOCAL] = Host(LOCAL, "this computer", None, self.events)
         self.targets = {}
-        for target in remotes:
-            key = ssh_identity(target)
-            if key in self.hosts:
-                continue
-            self.hosts[key] = Host(key, short_label(target), target, self.events)
-            self.targets[key] = target
-            self.host_order.append(key)
+        self.follow_config = remotes is None  # no --remote: follow the setting in shell.json
+        self.config_mtime = None
+        self.started = False
+        self.set_remotes(remotes if remotes is not None else (configured_remotes() or []))
         self.sessions = {}      # (host, session) -> {"focus": {...}, "agents": {pane: agent}}
         self.stash = {}         # sessions of a host that reconnected, until they report again
         self.waiting = {}       # key -> since
@@ -358,6 +387,38 @@ class Watcher:
         self.save_due = None
         self.restored = self.load()
         self.out_lock = threading.Lock()
+
+    def set_remotes(self, remotes):
+        wanted = {}
+        for target in remotes:
+            wanted.setdefault(ssh_identity(target), target)
+        for key in [k for k in self.host_order if k != LOCAL and k not in wanted]:
+            log("no longer watching", self.targets.get(key, key))
+            self.hosts.pop(key).stop()
+            self.host_order.remove(key)
+            self.targets.pop(key, None)
+            self.dirty = True
+        for key, target in wanted.items():
+            if key in self.hosts:
+                continue
+            self.hosts[key] = Host(key, short_label(target), target, self.events)
+            self.targets[key] = target
+            self.host_order.append(key)
+            if self.started:
+                self.hosts[key].start()
+            self.dirty = True
+
+    def check_config(self):
+        try:
+            mtime = os.stat(SHELL_CONFIG).st_mtime
+        except OSError:
+            return
+        if mtime == self.config_mtime:
+            return
+        self.config_mtime = mtime
+        remotes = configured_remotes()
+        if remotes is not None:
+            self.set_remotes(remotes)
 
     # ------------------------------------------------------------ state file
     def load(self):
@@ -374,8 +435,13 @@ class Watcher:
         try:
             os.makedirs(STATE_DIR, exist_ok=True)
             tmp = STATE_FILE + ".tmp"
+            keep = dict(self.waiting)
+            for key, since in self.restored.items():
+                host, name, _ = key.split("|", 2)
+                if key not in keep and (host, name) not in self.sessions and host in self.hosts:
+                    keep[key] = since  # not read again yet (e.g. the host hasn't reconnected)
             with open(tmp, "w") as handle:
-                json.dump({"waiting": self.waiting}, handle)
+                json.dump({"waiting": keep}, handle)
             os.replace(tmp, STATE_FILE)
         except OSError as error:
             log("could not save state:", error)
@@ -388,13 +454,15 @@ class Watcher:
     def key(host, session, pane):
         return "%s|%s|%s" % (host, session, pane)
 
-    def start_waiting(self, key, since=None):
+    def start_waiting(self, key, why, since=None):
         if key not in self.waiting:
             self.waiting[key] = since or time.time()
+            log("waiting:", key, "(%s)" % why)
             self.changed()
 
-    def stop_waiting(self, key):
+    def stop_waiting(self, key, why):
         if self.waiting.pop(key, None) is not None:
+            log("not waiting:", key, "(%s)" % why)
             self.changed()
 
     def changed(self):
@@ -420,25 +488,25 @@ class Watcher:
             status = agent.get("status")
             before = (prev or {}).get("agents", {}).get(pane) if prev else None
             if status == "working":
-                self.stop_waiting(key)
+                self.stop_waiting(key, "working again")
             elif prev is None:
                 # First look at this session since the watcher started.
                 if status in ("blocked", "done"):
-                    self.start_waiting(key, self.restored.get(key))
+                    self.start_waiting(key, "first read: " + status, self.restored.get(key))
                 elif status == "idle" and key in self.restored:
-                    self.start_waiting(key, self.restored[key])
+                    self.start_waiting(key, "first read: still waiting before restart", self.restored[key])
             elif before is None:
                 if status in ("blocked", "done"):
-                    self.start_waiting(key)
+                    self.start_waiting(key, "new agent: " + status)
             else:
                 old = before.get("status")
                 if status in ("blocked",) + FINISHED_STATES and status != old \
                         and not (old == "done" and status == "idle"):
-                    self.start_waiting(key)
+                    self.start_waiting(key, "%s -> %s" % (old, status))
         if prev:
             for pane in prev.get("agents", {}):
                 if pane not in agents:
-                    self.stop_waiting(self.key(host, name, pane))
+                    self.stop_waiting(self.key(host, name, pane), "pane closed")
         self.sessions[sk] = {"focus": message.get("focus") or {}, "agents": agents}
         self.dirty = True
 
@@ -454,7 +522,7 @@ class Watcher:
             sk = (host, message.get("session"))
             data = self.sessions.pop(sk, None) or self.stash.pop(sk, None)
             for pane in (data or {}).get("agents", {}):
-                self.stop_waiting(self.key(host, sk[1], pane))
+                self.stop_waiting(self.key(host, sk[1], pane), "session stopped")
             self.dirty = True
 
     def on_hypr(self, name, data):
@@ -496,7 +564,7 @@ class Watcher:
                 host, name, pane = key.split("|", 2)
                 agent = self.sessions.get((host, name), {}).get("agents", {}).get(pane) or {}
                 if agent.get("status") != "blocked":
-                    self.stop_waiting(key)
+                    self.stop_waiting(key, "in front of you for %.0fs in window %s" % (now - since, self.active))
         if visible != self.visible:
             self.visible = visible
             self.dirty = True
@@ -607,8 +675,13 @@ class Watcher:
 
     # ------------------------------------------------------------ main loop
     def start(self, follow_desktop=True):
-        for host in self.hosts.values():
-            host.start()
+        self.started = True
+        if self.follow_config:
+            self.config_mtime = None
+            self.check_config()
+        for host in list(self.hosts.values()):
+            if not host.is_alive():
+                host.start()
         if follow_desktop:
             threading.Thread(target=hyprland_events, args=(self.events,), daemon=True).start()
             self.refresh_windows()
@@ -629,7 +702,7 @@ class Watcher:
             elif kind == "hypr":
                 self.on_hypr(a, b)
             elif kind == "seen":
-                self.stop_waiting(a)
+                self.stop_waiting(a, "picked from the list")
             elif kind == "command":
                 self.handle_command(a)
             try:
@@ -638,6 +711,8 @@ class Watcher:
                 event = None
         if time.time() - self.windows_at > WINDOW_RESCAN:
             self.refresh_windows()
+            if self.follow_config:
+                self.check_config()
         self.update_view()
         if self.save_due is not None and time.time() >= self.save_due:
             self.save_due = None
@@ -660,6 +735,12 @@ class Watcher:
 
 # ---------------------------------------------------------------- commands
 
+def remotes_arg(args):
+    if getattr(args, "local_only", False):
+        return []
+    return remotes_from(args.remote) if args.remote else None
+
+
 def remotes_from(values):
     remotes = []
     for value in values or []:
@@ -670,7 +751,7 @@ def remotes_from(values):
 
 
 def cmd_list(args):
-    watcher = Watcher(remotes_from(args.remote))
+    watcher = Watcher(remotes_arg(args))
     watcher.start()
     deadline = time.time() + args.wait
     while time.time() < deadline:
@@ -719,10 +800,14 @@ def main():
     parser = argparse.ArgumentParser(prog="herdr-ready", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command")
     watch = sub.add_parser("watch")
-    watch.add_argument("--remote", action="append", help="SSH target to watch (repeat, or comma-separated)")
+    watch.add_argument("--remote", action="append",
+                       help="SSH target to watch (repeat, or comma-separated); without it, the plugin's "
+                            "`remotes` setting in Omarchy's shell.json is used and followed")
+    watch.add_argument("--local-only", action="store_true", help="watch only this computer")
     watch.add_argument("--seen-after", type=float, default=SEEN_AFTER)
     listing = sub.add_parser("list")
     listing.add_argument("--remote", action="append")
+    listing.add_argument("--local-only", action="store_true")
     listing.add_argument("--json", action="store_true")
     listing.add_argument("--wait", type=float, default=12.0)
     sub.add_parser("windows")
@@ -731,7 +816,7 @@ def main():
     plan.add_argument("session")
     args = parser.parse_args()
     if args.command == "watch":
-        Watcher(remotes_from(args.remote), args.seen_after, persist=True).watch()
+        Watcher(remotes_arg(args), args.seen_after, persist=True).watch()
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "windows":

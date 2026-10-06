@@ -44,7 +44,7 @@ def statuses():
 
 
 def listing():
-    out = subprocess.run([HELPER, "list", "--json", "--wait", "6"], capture_output=True, text=True,
+    out = subprocess.run([HELPER, "list", "--local-only", "--json", "--wait", "6"], capture_output=True, text=True,
                          timeout=30, env=ENV).stdout
     state = json.loads(out)
     for group in state["groups"]:
@@ -136,7 +136,7 @@ class AgainstHerdr(unittest.TestCase):
         import select
         call("pane.focus", {"pane_id": self.shown})  # herdr shows this agent's workspace again
         report(self.shown, "working")
-        watch = subprocess.Popen([HELPER, "watch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        watch = subprocess.Popen([HELPER, "watch", "--local-only"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                  text=True, env=ENV)
 
         def wait_for(predicate, seconds):

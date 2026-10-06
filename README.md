@@ -60,7 +60,7 @@ Other commands:
 ```bash
 setup hotkey "SUPER + J"     # use another key (refuses one that's already taken)
 setup status                 # what's installed, and the list as the helper sees it
-omarchy bar set gg.arkship.herdr-ready remotes "drewdunne@server other@box"
+omarchy bar set gg.arkship.herdr-ready remotes "drewdunne@server other@box"   # picked up within 15 s
 ```
 
 ## Remove

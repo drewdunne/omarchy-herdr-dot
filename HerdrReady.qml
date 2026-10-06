@@ -14,8 +14,8 @@ Panel {
   ipcTarget: "gg.arkship.herdr-ready"
   manageIpc: false
 
-  // ---------------------------------------------------------------- settings
-  readonly property string remotes: String(setting("remotes", ""))
+  // The `remotes` setting is read by the helper itself from shell.json (and followed), so a
+  // reload that starts the helper before this widget's settings arrive can't lose it.
   readonly property string helperPath: Qt.resolvedUrl("bin/herdr-ready").toString().replace(/^file:\/\//, "")
 
   // ---------------------------------------------------------------- state from the helper
@@ -79,7 +79,7 @@ Panel {
     id: helper
     // Omarchy can load a bar widget more than once; only the copy in a bar runs the helper.
     running: root.bar !== null
-    command: [root.helperPath, "watch"].concat(root.remotes.trim() === "" ? [] : ["--remote", root.remotes])
+    command: [root.helperPath, "watch"]
     stdinEnabled: true
     stdout: SplitParser {
       onRead: function(data) {
@@ -103,7 +103,6 @@ Panel {
     interval: 5000
     onTriggered: helper.running = root.bar !== null
   }
-  onRemotesChanged: if (helper.running) { helper.running = false; restartTimer.start() }
 
   function send(line) {
     if (helper.running) helper.write(line + "\n")

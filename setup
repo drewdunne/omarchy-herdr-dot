@@ -251,10 +251,8 @@ cmd_status() {
   else
     echo "Bar dot: not in the bar"
   fi
-  local remotes
-  remotes=$(jq -r --arg id "$ID" '[.bar.layout[][]? | select(.id == $id) | .remotes // ""][0] // ""' "$SHELL_CONFIG" 2>/dev/null || true)
   echo
-  if [[ -n $remotes ]]; then "$HELPER" list --remote "$remotes"; else "$HELPER" list; fi
+  "$HELPER" list
 }
 
 # Sourcing this file (the tests do) only defines the functions above.

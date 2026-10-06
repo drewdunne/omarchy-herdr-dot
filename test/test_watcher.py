@@ -2,6 +2,7 @@
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -62,7 +63,7 @@ class Waiting(unittest.TestCase):
         self.clock = Clock()
         self.real_time = hr.time.time
         hr.time.time = self.clock
-        self.w = hr.Watcher([])
+        self.w = hr.Watcher([])  # no remotes, and not following shell.json
         self.w.restored = {}
         self.w.hosts[hr.LOCAL].ok = True
 
@@ -184,6 +185,39 @@ class Waiting(unittest.TestCase):
         self.session("tinyhost", [agent("w1:p1", "done")])
         group = self.w.state()["groups"][0]
         self.assertEqual((group["session"], group["hostLabel"]), ("tinyhost", ""))
+
+
+class Settings(unittest.TestCase):
+    def test_remotes_from_shell_json(self):
+        path = os.path.join(tempfile.mkdtemp(), "shell.json")
+        with open(path, "w") as handle:
+            handle.write('{"bar": {"layout": {"left": [{"id": "omarchy.workspaces"},'
+                         '{"id": "gg.arkship.herdr-ready", "remotes": "a@one, two  three"}]}}}')
+        self.assertEqual(hr.configured_remotes(path), ["a@one", "two", "three"])
+        with open(path, "w") as handle:
+            handle.write('{"bar": {"layout": {"left": [{"id": "gg.arkship.herdr-ready"}]}}}')
+        self.assertEqual(hr.configured_remotes(path), [])
+        self.assertIsNone(hr.configured_remotes(path + ".missing"))
+
+    def test_hosts_follow_the_setting(self):
+        real = hr.ssh_identity
+        hr.ssh_identity = lambda target: "id:" + target.split("@")[-1]
+        try:
+            w = hr.Watcher(["me@box"])
+            self.assertEqual(w.host_order, [hr.LOCAL, "id:box"])
+            w.set_remotes(["box", "other"])  # same machine under another name: kept as is
+            self.assertEqual(w.host_order, [hr.LOCAL, "id:box", "id:other"])
+            w.set_remotes([])
+            self.assertEqual(w.host_order, [hr.LOCAL])
+        finally:
+            hr.ssh_identity = real
+
+    def test_save_keeps_remembered_agents_not_read_yet(self):
+        w = hr.Watcher([], persist=True)
+        w.restored = {"local|s|w1:p1": 900.0, "gone-host|s|w1:p1": 800.0}
+        w.save()
+        with open(hr.STATE_FILE) as handle:
+            self.assertEqual(json.load(handle)["waiting"], {"local|s|w1:p1": 900.0})
 
 
 if __name__ == "__main__":
