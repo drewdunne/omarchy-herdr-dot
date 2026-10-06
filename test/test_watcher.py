@@ -220,5 +220,33 @@ class Settings(unittest.TestCase):
             self.assertEqual(json.load(handle)["waiting"], {"local|s|w1:p1": 900.0})
 
 
+class NewWindowWorkspace(unittest.TestCase):
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(), "workspaces.json")
+        self.ident = lambda target: "id:" + target.split("@")[-1]
+
+    def write(self, workspaces):
+        with open(self.path, "w") as handle:
+            json.dump({"version": 1, "workspaces": workspaces}, handle)
+
+    def test_the_sessions_own_workspace(self):
+        self.write({"3": {"session": "tinyhost", "remote": "drewdunne@server"},
+                    "7": {"remote": "server"}, "1": {"session": "ark"}})
+        self.assertEqual(hr.workspace_for("id:server", "tinyhost", self.ident, {1, 2, 3}, self.path), 3)
+        self.assertEqual(hr.workspace_for("id:server", "default", self.ident, set(), self.path), 7)
+        self.assertEqual(hr.workspace_for(hr.LOCAL, "ark", self.ident, {1}, self.path), 1)
+
+    def test_first_empty_not_assigned_elsewhere(self):
+        self.write({"6": {"session": "other"}, "8": {}})
+        # 1-5 in use, 6 belongs to another session, 7 is free; an entry with nothing set is free
+        self.assertEqual(hr.workspace_for(hr.LOCAL, "s", self.ident, {1, 2, 3, 4, 5}, self.path), 7)
+        self.assertEqual(hr.workspace_for(hr.LOCAL, "s", self.ident, {1, 2, 3, 4, 5, 7}, self.path), 8)
+
+    def test_without_settings_first_empty(self):
+        missing = self.path + ".missing"
+        self.assertEqual(hr.workspace_for(hr.LOCAL, "s", self.ident, {1, 2, 3, 4, 5, 10}, missing), 6)
+        self.assertIsNone(hr.workspace_for(hr.LOCAL, "s", self.ident, set(range(1, 11)), missing))
+
+
 if __name__ == "__main__":
     unittest.main()

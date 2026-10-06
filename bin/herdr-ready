@@ -327,6 +327,55 @@ def focus_window(address):
         hyprctl("dispatch", "focuswindow", "address:0x%s" % address)
 
 
+SESSION_MANAGER = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                               "herdr-session-manager", "workspaces.json")
+
+
+def session_workspaces(host_key_for, path=SESSION_MANAGER):
+    """{workspace number: (host key, session)} from herdr-session-manager's settings (intent
+    0023): `{"workspaces": {"3": {"session": "tinyhost", "remote": "user@host"}}}`. A missing
+    session means the default session, a missing remote means this computer, and an entry with
+    neither isn't set."""
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for number, entry in ((data or {}).get("workspaces") or {}).items():
+        if not isinstance(entry, dict) or not str(number).isdigit():
+            continue
+        remote = str(entry.get("remote") or "").strip()
+        session = str(entry.get("session") or "").strip()
+        if not remote and not session:
+            continue
+        out[int(number)] = (LOCAL if not remote else host_key_for(remote), session or "default")
+    return out
+
+
+def workspace_for(host, session, host_key_for, workspaces_in_use, path=SESSION_MANAGER):
+    """Where a new window for a session goes: the workspace herdr-session-manager assigns to it,
+    else the first empty workspace (1-9, then 0) that isn't assigned to another session."""
+    assigned = session_workspaces(host_key_for, path)
+    mine = sorted(n for n, target in assigned.items() if target == (host, session))
+    if mine:
+        return mine[0]
+    for number in range(1, 11):
+        if number not in workspaces_in_use and number not in assigned:
+            return number
+    return None
+
+
+def workspaces_in_use():
+    return {w.get("id") for w in (hypr_json("workspaces") or []) if (w.get("windows") or 0) > 0}
+
+
+def switch_workspace(number):
+    out = hyprctl("dispatch", "hl.dsp.focus({ workspace = '%d' })" % number)
+    if out.strip() != "ok":
+        hyprctl("dispatch", "workspace", str(number))
+
+
 def choose_window(candidates, workspace):
     here = [w for w in candidates if w["workspace"] == workspace]
     pool = here or candidates
@@ -643,9 +692,14 @@ class Watcher:
             self.focus_agent(host, session, pane)
             return
         # No window shows this session. Nothing is attached to it, so focusing the agent first
-        # moves no other window, and the new one opens on that agent.
+        # moves no other window, and the new one opens on that agent. It opens on the session's
+        # own workspace (herdr-session-manager) or the first empty one, and you go there.
         self.focus_agent(host, session, pane)
+        number = workspace_for(host, session, self.host_key_for, workspaces_in_use())
         time.sleep(0.3)
+        if number is not None:
+            switch_workspace(number)
+            time.sleep(0.15)
         command = ["herdr"]
         if host != LOCAL:
             command += ["--remote", self.targets[host]]
@@ -792,8 +846,11 @@ def cmd_plan(args):
     else:
         command = ["herdr"] + ([] if host == LOCAL else ["--remote", args.target]) + \
                   ([] if args.session == "default" else ["--session", args.session])
-        print("focus the agent in session %s, then open: omarchy-launch-terminal %s"
-              % (args.session, " ".join(command)))
+        number = workspace_for(host, args.session, ssh_identity, workspaces_in_use())
+        where = "the current workspace" if number is None else \
+            "workspace %d" % (0 if number == 10 else number)
+        print("focus the agent in session %s, switch to %s, then open: omarchy-launch-terminal %s"
+              % (args.session, where, " ".join(command)))
 
 
 def main():

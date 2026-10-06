@@ -3,8 +3,9 @@
 A dot in the Omarchy bar with the number of [herdr](https://herdr.dev) agents waiting for
 you, across every herdr session on this computer and on your SSH hosts. Click the dot, or
 press **Super + H**, and a small list opens, grouped by herdr session. Pick an agent and you
-land on it: the terminal window showing that session comes to the front (switching desktop
-workspace if needed) and herdr focuses the agent's pane.
+land on it: you're taken to the terminal window showing that session (switching desktop
+workspace if needed) and herdr focuses the agent's pane. If no window shows that session, one
+opens on the session's own workspace, or the first empty one, and you're taken there.
 
 herdr itself is not changed: no herdr plugin, no herdr settings, no saved machines. The
 plugin only reads herdr's state, and asks herdr to focus an agent when you pick one. It never
@@ -99,7 +100,10 @@ plugin's settings and state, and removes the plugin from the bar and from disk.
 - **Going to an agent**: if a window shows that session, Hyprland focuses it; the terminal
   tells herdr it has focus, and herdr's "focus agent" then moves *that* window to the agent. If
   no window shows the session, the helper focuses the agent first (no window is attached, so
-  nothing else moves) and opens a terminal attached to the session, which starts on it.
+  nothing else moves), switches you to the session's workspace and opens a terminal attached to
+  the session there, which starts on the agent. The session's workspace is the one
+  herdr-session-manager assigns to it (`~/.config/herdr-session-manager/workspaces.json`), or
+  else the first empty workspace (1–9, then 0) that isn't assigned to another session.
 
 `bin/herdr-ready list`, `windows` and `plan local tinyhost` print what the helper sees, for
 checking things by hand.
