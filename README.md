@@ -1,5 +1,7 @@
 # Herdr Dot
 
+![The dot showing 4, and the list grouped by herdr session](preview.png)
+
 A dot in the Omarchy bar with the number of [herdr](https://herdr.dev) agents waiting for
 you, across every herdr session on this computer and on your SSH hosts. Click the dot, or
 press **Super + H**, and a small list opens, grouped by herdr session. Pick an agent and you
