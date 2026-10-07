@@ -1,6 +1,6 @@
 """End to end against a real herdr: a throwaway session (zz-hr-test-<pid>) is started
 headless, agents are faked in it with herdr's own pane.report_agent, and the relay and
-`herdr-ready list` must report them. The session is stopped and deleted afterwards.
+`herdr-dot list` must report them. The session is stopped and deleted afterwards.
 Skipped when herdr isn't installed. Reads, but never changes, any other session."""
 
 import json
@@ -12,8 +12,8 @@ import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HELPER = os.path.join(HERE, "..", "bin", "herdr-ready")
-RELAY = os.path.join(HERE, "..", "bin", "herdr_ready_relay.py")
+HELPER = os.path.join(HERE, "..", "bin", "herdr-dot")
+RELAY = os.path.join(HERE, "..", "bin", "herdr_dot_relay.py")
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr")
 NAME = "zz-hr-test-%d" % os.getpid()
 SOCK = os.path.join(CONFIG, "sessions", NAME, "herdr.sock")
@@ -36,7 +36,7 @@ def call(method, params=None):
 
 
 def report(pane, state):
-    call("pane.report_agent", {"pane_id": pane, "source": "herdr-ready-test", "agent": "claude", "state": state})
+    call("pane.report_agent", {"pane_id": pane, "source": "herdr-dot-test", "agent": "claude", "state": state})
 
 
 def statuses():

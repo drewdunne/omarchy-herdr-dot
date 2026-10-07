@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""herdr-ready: the herdr agents waiting for you, across every session on every machine.
+"""herdr-dot: the herdr agents waiting for you, across every session on every machine.
 
-  herdr-ready watch [--remote TARGET]...   stream the list as JSON, one line per change
+  herdr-dot watch [--remote TARGET]...   stream the list as JSON, one line per change
                                            (the bar widget runs this); reads commands on
                                            stdin: `go <key>`, `first`, `refresh`
-  herdr-ready list [--remote TARGET]...    print the list once and exit
+  herdr-dot list [--remote TARGET]...    print the list once and exit
                                            Without --remote, both use the plugin's `remotes`
                                            setting in Omarchy's shell.json (watch follows
                                            changes to it); --local-only skips remote hosts
-  herdr-ready windows                      print which window shows which herdr session
-  herdr-ready plan TARGET SESSION          print what going to that session would do
+  herdr-dot windows                      print which window shows which herdr session
+  herdr-dot plan TARGET SESSION          print what going to that session would do
                                            (TARGET is `local` or an SSH target)
 
 What "waiting for you" means (see README): an agent starts waiting when it leaves
@@ -19,7 +19,7 @@ desktop), when you go to it from the list, or when it starts working again. An a
 asking a question stays on the list until it is answered, except while it is in
 front of you.
 
-Every machine is read by herdr_ready_relay.py: run directly here, and over SSH on
+Every machine is read by herdr_dot_relay.py: run directly here, and over SSH on
 remote targets (its source travels with the command; nothing is installed there).
 """
 
@@ -35,8 +35,8 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-RELAY = os.path.join(HERE, "herdr_ready_relay.py")
-STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr-ready")
+RELAY = os.path.join(HERE, "herdr_dot_relay.py")
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "herdr-dot")
 STATE_FILE = os.path.join(STATE_DIR, "waiting.json")
 LOCAL = "local"
 SEEN_AFTER = 1.0          # seconds an agent must be in front of you to count as seen
@@ -47,7 +47,7 @@ FINISHED_STATES = ("done", "idle")
 
 
 def log(*parts):
-    sys.stderr.write("herdr-ready: " + " ".join(str(p) for p in parts) + "\n")
+    sys.stderr.write("herdr-dot: " + " ".join(str(p) for p in parts) + "\n")
     sys.stderr.flush()
 
 
@@ -57,7 +57,7 @@ _identity_cache = {}
 
 
 def ssh_identity(target):
-    """user@hostname:port as SSH resolves TARGET, so `server` and `drewdunne@server` match."""
+    """user@hostname:port as SSH resolves TARGET, so `server` and `me@server` match."""
     if target in _identity_cache:
         return _identity_cache[target]
     values = {}
@@ -79,7 +79,7 @@ def ssh_identity(target):
 
 
 def short_label(target):
-    """`drewdunne@server.example.ts.net` -> `server`."""
+    """`me@server.example.ts.net` -> `server`."""
     host = target.split("@")[-1]
     if host.startswith("[") and "]" in host:
         return host[1:host.index("]")]
@@ -92,7 +92,7 @@ def relay_command(target):
     with open(RELAY, "rb") as handle:
         source = base64.b64encode(handle.read()).decode()
     bootstrap = ("python3 -u -c 'import base64,sys;exec(compile(base64.b64decode(sys.argv[1]),"
-                 "\"herdr-ready-relay\",\"exec\"))' " + source)
+                 "\"herdr-dot-relay\",\"exec\"))' " + source)
     return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", target, bootstrap]
 
@@ -185,7 +185,7 @@ class Host(threading.Thread):
 
 SHELL_CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
                             "omarchy", "shell.json")
-PLUGIN_ID = "gg.arkship.herdr-ready"
+PLUGIN_ID = "gg.arkship.herdr-dot"
 
 
 def configured_remotes(path=SHELL_CONFIG):
@@ -332,8 +332,8 @@ SESSION_MANAGER = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expa
 
 
 def session_workspaces(host_key_for, path=SESSION_MANAGER):
-    """{workspace number: (host key, session)} from herdr-session-manager's settings (intent
-    0023): `{"workspaces": {"3": {"session": "tinyhost", "remote": "user@host"}}}`. A missing
+    """{workspace number: (host key, session)} from herdr-session-manager's settings, if
+    present: `{"workspaces": {"3": {"session": "myproject", "remote": "user@host"}}}`. A missing
     session means the default session, a missing remote means this computer, and an entry with
     neither isn't set."""
     try:
@@ -854,7 +854,7 @@ def cmd_plan(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="herdr-ready", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="herdr-dot", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command")
     watch = sub.add_parser("watch")
     watch.add_argument("--remote", action="append",

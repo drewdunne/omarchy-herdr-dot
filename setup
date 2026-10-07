@@ -1,40 +1,52 @@
 #!/bin/bash
 
-# Set up Herdr Ready on this machine. Run it from the installed plugin folder,
-# ~/.config/omarchy/plugins/gg.arkship.herdr-ready/.
+# Set up Herdr Dot on this machine. Run it from the installed plugin folder,
+# ~/.config/omarchy/plugins/gg.arkship.herdr-dot/.
 #
-# install [--remote TARGET]...  load the hotkey from ~/.config/hypr/hyprland.lua, add the
-#                               dot to the bar after the workspace numbers, and watch the
-#                               herdr sessions on each SSH TARGET too
+# install [--remote TARGET]... [--yes]
+#                               add the dot to the bar after the workspace numbers, watch the
+#                               herdr sessions on each SSH TARGET too, and (after asking, or
+#                               with --yes) load the hotkey from your Hyprland config
 # hotkey "SUPER + J"            change the hotkey (default SUPER + H)
 # uninstall                     remove everything install added, and the plugin itself
 # status                        show what is installed and what the helper sees
 
 set -euo pipefail
 
-ID="gg.arkship.herdr-ready"
+ID="gg.arkship.herdr-dot"
 PLUGIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-HELPER="$PLUGIN_DIR/bin/herdr-ready"
+HELPER="$PLUGIN_DIR/bin/herdr-dot"
 HYPR_MAIN="$HOME/.config/hypr/hyprland.lua"
 # A per-machine file loaded last by hyprland.lua (omarchy-config keeps one per host). When it
 # exists the hotkey goes there, so a hyprland.lua shared between machines stays untouched.
 HYPR_HOST="$HOME/.config/hypr/host.lua"
 if [[ -f $HYPR_HOST ]]; then HYPR_CONFIG=$HYPR_HOST; else HYPR_CONFIG=$HYPR_MAIN; fi
 SHELL_CONFIG="$HOME/.config/omarchy/shell.json"
-CONFIG_DIR="$HOME/.config/herdr-ready"
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-ready"
+CONFIG_DIR="$HOME/.config/herdr-dot"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-dot"
 DEFAULT_KEY="SUPER + H"
 BEGIN_MARK=">>> $ID >>>"
 END_MARK="<<< $ID <<<"
 ANCHOR='require("default.hypr.omarchy")'
 
 usage() {
-  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
   echo "setup: $*" >&2
   exit 1
+}
+
+ASSUME_YES=0
+
+# confirm QUESTION: yes with --yes, otherwise asks on the terminal (Enter means yes).
+confirm() {
+  ((ASSUME_YES)) && return 0
+  [[ -t 0 ]] || die "$1 Can't ask without a terminal; run setup install --yes to agree."
+  local answer
+  read -r -p "$1 [Y/n] " answer
+  [[ -z $answer || $answer == [Yy]* ]]
 }
 
 backup() {
@@ -62,10 +74,10 @@ block_file() {
 hypr_block() {
   cat <<LUA
 -- $BEGIN_MARK
--- Herdr Ready: a hotkey (SUPER + H unless ~/.config/herdr-ready/hotkey says otherwise)
+-- Herdr Dot: a hotkey (SUPER + H unless ~/.config/herdr-dot/hotkey says otherwise)
 -- opens the list of herdr agents waiting for you. Run the plugin's \`setup uninstall\` to remove.
 do
-  local path = os.getenv("HOME") .. "/.config/omarchy/plugins/$ID/hypr/herdr-ready.lua"
+  local path = os.getenv("HOME") .. "/.config/omarchy/plugins/$ID/hypr/herdr-dot.lua"
   local file = io.open(path, "r")
   if file then
     file:close()
@@ -152,7 +164,7 @@ key_taken_by() {
   name=$(key_name "$1")
   hyprctl binds -j 2>/dev/null | jq -r --argjson mask "$mask" --arg key "$name" '
     .[] | select(.modmask == $mask and (.key | ascii_upcase) == ($key | ascii_upcase))
-        | select((.arg // "") | contains("gg.arkship.herdr-ready") | not)
+        | select((.arg // "") | contains("gg.arkship.herdr-dot") | not)
         | (.description // .arg)'
 }
 
@@ -199,6 +211,7 @@ cmd_install() {
     case $1 in
       --remote) [[ $# -ge 2 ]] || die "--remote needs an SSH target"; remotes+=("$2"); shift 2 ;;
       --remote=*) remotes+=("${1#--remote=}"); shift ;;
+      --yes | -y) ASSUME_YES=1; shift ;;
       *) die "unknown option $1" ;;
     esac
   done
@@ -206,14 +219,18 @@ cmd_install() {
   check_location
   chmod +x "$HELPER" "$PLUGIN_DIR/setup"
 
-  check_key_free "$(current_key)"
   if block_file >/dev/null; then
     echo "Hotkey already loaded from $(block_file)"
   else
-    backup "$HYPR_CONFIG"
-    insert_block
-    reload_hyprland
-    echo "Hotkey $(current_key) loaded from $HYPR_CONFIG"
+    check_key_free "$(current_key)"
+    if confirm "Add a marked block to $HYPR_CONFIG so $(current_key) opens the list? It's backed up first, and setup uninstall takes the block out again."; then
+      backup "$HYPR_CONFIG"
+      insert_block
+      reload_hyprland
+      echo "Hotkey $(current_key) loaded from $HYPR_CONFIG"
+    else
+      echo "Left $HYPR_CONFIG alone: no hotkey. Click the dot instead, or run setup install again later."
+    fi
   fi
 
   if widget_enabled; then
@@ -259,14 +276,14 @@ cmd_uninstall() {
     # Disables the dot, takes it out of the shell and deletes the plugin folder.
     omarchy plugin remove "$ID" --yes
   fi
-  echo "Herdr Ready is removed."
+  echo "Herdr Dot is removed."
 }
 
 cmd_status() {
   echo "Plugin:  $PLUGIN_DIR"
   if block_file >/dev/null; then echo "Hotkey:  $(current_key) (loaded from $(block_file))"; else echo "Hotkey:  not loaded"; fi
   [[ -z $(key_taken_by "$(current_key)") ]] || echo "Warning: $(current_key) is also bound to: $(key_taken_by "$(current_key)")"
-  hyprctl binds -j 2>/dev/null | jq -e '[.[] | select((.arg // "") | contains("gg.arkship.herdr-ready"))] | length > 0' >/dev/null 2>&1 ||
+  hyprctl binds -j 2>/dev/null | jq -e '[.[] | select((.arg // "") | contains("gg.arkship.herdr-dot"))] | length > 0' >/dev/null 2>&1 ||
     hyprctl binds -j 2>/dev/null | jq -e --argjson m "$(key_mask "$(current_key)")" --arg k "$(key_name "$(current_key)")" \
       '[.[] | select(.modmask == $m and (.key | ascii_upcase) == ($k | ascii_upcase))] | length > 0' >/dev/null 2>&1 ||
     echo "Warning: Hyprland has no binding for $(current_key) right now; run: setup install"

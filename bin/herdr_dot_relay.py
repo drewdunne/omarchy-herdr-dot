@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""herdr-ready relay: follows every herdr session on one machine.
+"""herdr-dot relay: follows every herdr session on one machine.
 
 Runs on the machine whose sessions it reads: directly on this computer, and on a
 remote host through `ssh <host> python3 -c ...` (the watcher sends this file's

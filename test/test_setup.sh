@@ -18,7 +18,7 @@ HYPR_MAIN="$tmp/hyprland.lua"
 HYPR_HOST="$tmp/host.lua"
 HYPR_CONFIG=$HYPR_MAIN
 insert_block
-grep -qF -- "-- >>> gg.arkship.herdr-ready >>>" "$HYPR_CONFIG"
+grep -qF -- "-- >>> gg.arkship.herdr-dot >>>" "$HYPR_CONFIG"
 [[ $(grep -n 'default.hypr.omarchy' "$HYPR_CONFIG" | cut -d: -f1) -lt $(grep -n '>>> gg.arkship' "$HYPR_CONFIG" | cut -d: -f1) ]]
 has_block
 remove_block
@@ -28,17 +28,21 @@ cmp "$tmp/original.lua" "$HYPR_CONFIG"
 [[ $(key_mask "SUPER + CTRL + SHIFT + J") == 69 ]]
 # With a per-machine host.lua (omarchy-config), the block goes there, through a link.
 mkdir "$tmp/repo"
-printf -- '-- AMD-LZM4 only\no.bind("SUPER + ALT + P", "Screenshot", "x")\n' >"$tmp/repo/host.lua"
+printf -- '-- this machine only\no.bind("SUPER + ALT + P", "Screenshot", "x")\n' >"$tmp/repo/host.lua"
 cp "$tmp/repo/host.lua" "$tmp/host-original.lua"
 ln -s "$tmp/repo/host.lua" "$HYPR_HOST"
 HYPR_CONFIG=$HYPR_HOST
 insert_block
 [[ -L $HYPR_HOST ]]
-grep -qF -- "-- >>> gg.arkship.herdr-ready >>>" "$tmp/repo/host.lua"
+grep -qF -- "-- >>> gg.arkship.herdr-dot >>>" "$tmp/repo/host.lua"
 cmp "$tmp/original.lua" "$HYPR_MAIN"
 [[ $(block_file) == "$HYPR_HOST" ]]
 remove_block "$(block_file)"
 [[ -L $HYPR_HOST ]]
 cmp "$tmp/host-original.lua" "$tmp/repo/host.lua"
 ! block_file
+# install asks before touching the Hyprland config: --yes agrees, and without a terminal to ask
+# on it stops instead of going ahead.
+(ASSUME_YES=1; confirm "Add it?")
+! (ASSUME_YES=0; confirm "Add it?" </dev/null) 2>/dev/null
 echo "setup block: ok"

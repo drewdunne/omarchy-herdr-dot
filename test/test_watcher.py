@@ -1,4 +1,4 @@
-"""Unit tests for bin/herdr-ready: command lines, and when an agent counts as waiting."""
+"""Unit tests for bin/herdr-dot: command lines, and when an agent counts as waiting."""
 
 import importlib.machinery
 import importlib.util
@@ -8,9 +8,9 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="herdr-ready-test-")
-_loader = importlib.machinery.SourceFileLoader("herdr_ready", os.path.join(HERE, "..", "bin", "herdr-ready"))
-_spec = importlib.util.spec_from_loader("herdr_ready", _loader)
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="herdr-dot-test-")
+_loader = importlib.machinery.SourceFileLoader("herdr_dot", os.path.join(HERE, "..", "bin", "herdr-dot"))
+_spec = importlib.util.spec_from_loader("herdr_dot", _loader)
 hr = importlib.util.module_from_spec(_spec)
 _loader.exec_module(hr)
 
@@ -33,17 +33,17 @@ class ParseClient(unittest.TestCase):
         self.assertEqual(hr.parse_client([]), (None, "default"))
 
     def test_named_session(self):
-        self.assertEqual(hr.parse_client(["--session", "tinyhost"]), (None, "tinyhost"))
-        self.assertEqual(hr.parse_client(["--session=tinyhost"]), (None, "tinyhost"))
-        self.assertEqual(hr.parse_client(["session", "attach", "tinyhost"]), (None, "tinyhost"))
+        self.assertEqual(hr.parse_client(["--session", "myproject"]), (None, "myproject"))
+        self.assertEqual(hr.parse_client(["--session=myproject"]), (None, "myproject"))
+        self.assertEqual(hr.parse_client(["session", "attach", "myproject"]), (None, "myproject"))
 
     def test_environment_session(self):
         self.assertEqual(hr.parse_client([], "work"), (None, "work"))
         self.assertEqual(hr.parse_client(["--session", "x"], "work"), (None, "x"))
 
     def test_remote(self):
-        self.assertEqual(hr.parse_client(["--remote", "drewdunne@server", "--session", "tinyhost"]),
-                         ("drewdunne@server", "tinyhost"))
+        self.assertEqual(hr.parse_client(["--remote", "me@server", "--session", "myproject"]),
+                         ("me@server", "myproject"))
         self.assertEqual(hr.parse_client(["--remote", "server"]), ("server", "default"))
         self.assertEqual(hr.parse_client(["--remote", "server", "--remote-keybindings", "server"]),
                          ("server", "default"))
@@ -53,7 +53,7 @@ class ParseClient(unittest.TestCase):
             self.assertIsNone(hr.parse_client(args), args)
 
     def test_short_label(self):
-        self.assertEqual(hr.short_label("drewdunne@server"), "server")
+        self.assertEqual(hr.short_label("me@server"), "server")
         self.assertEqual(hr.short_label("me@box.example.ts.net"), "box")
         self.assertEqual(hr.short_label("box:2222"), "box")
 
@@ -182,9 +182,9 @@ class Waiting(unittest.TestCase):
         self.assertEqual((state["count"], state["blocked"]), (3, 1))
 
     def test_groups_name_session_and_host(self):
-        self.session("tinyhost", [agent("w1:p1", "done")])
+        self.session("myproject", [agent("w1:p1", "done")])
         group = self.w.state()["groups"][0]
-        self.assertEqual((group["session"], group["hostLabel"]), ("tinyhost", ""))
+        self.assertEqual((group["session"], group["hostLabel"]), ("myproject", ""))
 
 
 class Settings(unittest.TestCase):
@@ -192,10 +192,10 @@ class Settings(unittest.TestCase):
         path = os.path.join(tempfile.mkdtemp(), "shell.json")
         with open(path, "w") as handle:
             handle.write('{"bar": {"layout": {"left": [{"id": "omarchy.workspaces"},'
-                         '{"id": "gg.arkship.herdr-ready", "remotes": "a@one, two  three"}]}}}')
+                         '{"id": "gg.arkship.herdr-dot", "remotes": "a@one, two  three"}]}}}')
         self.assertEqual(hr.configured_remotes(path), ["a@one", "two", "three"])
         with open(path, "w") as handle:
-            handle.write('{"bar": {"layout": {"left": [{"id": "gg.arkship.herdr-ready"}]}}}')
+            handle.write('{"bar": {"layout": {"left": [{"id": "gg.arkship.herdr-dot"}]}}}')
         self.assertEqual(hr.configured_remotes(path), [])
         self.assertIsNone(hr.configured_remotes(path + ".missing"))
 
@@ -230,9 +230,9 @@ class NewWindowWorkspace(unittest.TestCase):
             json.dump({"version": 1, "workspaces": workspaces}, handle)
 
     def test_the_sessions_own_workspace(self):
-        self.write({"3": {"session": "tinyhost", "remote": "drewdunne@server"},
+        self.write({"3": {"session": "myproject", "remote": "me@server"},
                     "7": {"remote": "server"}, "1": {"session": "ark"}})
-        self.assertEqual(hr.workspace_for("id:server", "tinyhost", self.ident, {1, 2, 3}, self.path), 3)
+        self.assertEqual(hr.workspace_for("id:server", "myproject", self.ident, {1, 2, 3}, self.path), 3)
         self.assertEqual(hr.workspace_for("id:server", "default", self.ident, set(), self.path), 7)
         self.assertEqual(hr.workspace_for(hr.LOCAL, "ark", self.ident, {1}, self.path), 1)
 

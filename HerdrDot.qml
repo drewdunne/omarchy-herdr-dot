@@ -4,19 +4,19 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Herdr Ready: a dot in the bar with the number of herdr agents waiting for you, across
+// Herdr Dot: a dot in the bar with the number of herdr agents waiting for you, across
 // every session on this computer and on the remote hosts in settings. Click it (or the
 // hotkey, Super + H by default) for the list, grouped by session; Enter or a click goes
-// to the agent. bin/herdr-ready does the watching and the going; this file draws.
+// to the agent. bin/herdr-dot does the watching and the going; this file draws.
 Panel {
   id: root
-  moduleName: "gg.arkship.herdr-ready"
-  ipcTarget: "gg.arkship.herdr-ready"
+  moduleName: "gg.arkship.herdr-dot"
+  ipcTarget: "gg.arkship.herdr-dot"
   manageIpc: false
 
   // The `remotes` setting is read by the helper itself from shell.json (and followed), so a
   // reload that starts the helper before this widget's settings arrive can't lose it.
-  readonly property string helperPath: Qt.resolvedUrl("bin/herdr-ready").toString().replace(/^file:\/\//, "")
+  readonly property string helperPath: Qt.resolvedUrl("bin/herdr-dot").toString().replace(/^file:\/\//, "")
 
   // ---------------------------------------------------------------- state from the helper
   property var snap: ({ count: 0, blocked: 0, groups: [], hosts: [] })
@@ -87,12 +87,12 @@ Panel {
           var parsed = JSON.parse(String(data || ""))
           if (parsed && typeof parsed === "object" && parsed.groups) root.snap = parsed
         } catch (e) {
-          console.warn("herdr-ready", "bad line from helper", e)
+          console.warn("herdr-dot", "bad line from helper", e)
         }
       }
     }
     stderr: SplitParser {
-      onRead: function(data) { if (String(data).trim() !== "") console.warn("herdr-ready", String(data).trim()) }
+      onRead: function(data) { if (String(data).trim() !== "") console.warn("herdr-dot", String(data).trim()) }
     }
     onExited: function(code, status) {
       if (root.bar !== null) restartTimer.start()

@@ -1,4 +1,4 @@
-# Herdr Ready
+# Herdr Dot
 
 A dot in the Omarchy bar with the number of [herdr](https://herdr.dev) agents waiting for
 you, across every herdr session on this computer and on your SSH hosts. Click the dot, or
@@ -18,7 +18,7 @@ shows a desktop notification.
 - **Red dot**: at least one of them is asking you a question or waiting for approval.
 - **A small red mark beside the dot**: a remote host can't be reached. Hover for which one.
 
-The list shows each session as a thin label (`tinyhost`, or `default · server` for a session
+The list shows each session as a thin label (`myproject`, or `default · server` for a session
 on a remote host), with that session's waiting agents under it, questions first, then the one
 that has waited longest. On the right of each label: the desktop workspace where a window
 shows that session, or "no window".
@@ -30,7 +30,7 @@ Keys in the list: **j / k** or the arrows move, **Enter** or a click goes to the
 
 herdr's own "done" state isn't enough. herdr marks an agent seen as soon as *any* herdr
 window shows its tab, even a window on a desktop workspace you aren't looking at. So Herdr
-Ready keeps its own record:
+Dot keeps its own record:
 
 - An agent **starts waiting** when it stops working: it finishes, or asks a question.
 - It **stops waiting** when it has been in front of you for one second: its tab is showing in
@@ -40,54 +40,69 @@ Ready keeps its own record:
   while it's in front of you.
 - When the plugin starts (login, shell restart), agents herdr reports as asking or finished
   and unseen count, plus any it was already counting before the restart
-  (`~/.local/state/herdr-ready/waiting.json`).
+  (`~/.local/state/herdr-dot/waiting.json`).
+
+## What you need
+
+- Omarchy 4 (its Quickshell bar and Lua Hyprland config).
+- [herdr](https://herdr.dev) 0.9 or newer, here and on each remote host (tested with 0.9.1 and
+  0.9.3).
+- `python3` (standard library only), `jq`, and for remote hosts `ssh`.
+- For each remote host: `ssh <host>` must work without a password prompt (a key, or an agent),
+  and the host needs `python3`. Nothing is installed there: the small program that reads its
+  herdr sessions is sent along with the SSH command each time it connects.
+- A terminal that runs each window as its own process, like Omarchy's default; see Limits.
 
 ## Install
 
 ```bash
-git clone https://github.com/drewdunne/omarchy-herdr-ready.git ~/.config/omarchy/plugins/gg.arkship.herdr-ready
-~/.config/omarchy/plugins/gg.arkship.herdr-ready/setup install --remote drewdunne@server
+omarchy plugin add https://github.com/drewdunne/omarchy-herdr-dot
+~/.config/omarchy/plugins/gg.arkship.herdr-dot/setup install --remote me@server
 ```
 
-`setup install` adds the dot after the workspace numbers, loads the hotkey through a marked
-block (the file is backed up first) in `~/.config/hypr/host.lua` when that per-machine file
-exists (as omarchy-config sets up), otherwise in `~/.config/hypr/hyprland.lua`, and sets which
-remote hosts to watch. If the hotkey ever stops working, `setup status` says whether Hyprland
-still has it, and running `setup install` again puts it back. Leave out `--remote` to watch only this computer. Remote hosts need
-`ssh <host>` to work without a password prompt, and `python3` there. Nothing is installed on
-them: the small program that reads their sessions is sent with the SSH command each time it
-connects.
+`setup install` adds the dot to the bar after the workspace numbers and sets which remote hosts
+to watch. Leave out `--remote` to watch only this computer, or repeat it for several hosts.
+
+It then asks before adding the hotkey: a short marked block that loads the plugin's
+`hypr/herdr-dot.lua`, added to `~/.config/hypr/host.lua` if you keep one (a per-machine file
+loaded by your `hyprland.lua`), otherwise to `~/.config/hypr/hyprland.lua`. The file is backed
+up first, and `setup uninstall` takes the block out again. Say no and the dot still works by
+clicking. `--yes` agrees without asking.
 
 Other commands:
 
 ```bash
 setup hotkey "SUPER + J"     # use another key (refuses one that's already taken)
 setup status                 # what's installed, and the list as the helper sees it
-omarchy bar set gg.arkship.herdr-ready remotes "drewdunne@server other@box"   # picked up within 15 s
+omarchy bar set gg.arkship.herdr-dot remotes "me@server other@box"   # picked up within 15 s
 ```
+
+If the hotkey ever stops working (say, your Hyprland config was replaced), `setup status` says
+whether Hyprland still has it, and `setup install` puts it back.
 
 ## Remove
 
 ```bash
-~/.config/omarchy/plugins/gg.arkship.herdr-ready/setup uninstall
+~/.config/omarchy/plugins/gg.arkship.herdr-dot/setup uninstall
 ```
 
-One step: it takes the hotkey out of `host.lua` or `hyprland.lua` (backing it up first), deletes the
-plugin's settings and state, and removes the plugin from the bar and from disk.
+One step: it takes the hotkey block out of `host.lua` or `hyprland.lua` (backing the file up
+first), deletes the plugin's settings (`~/.config/herdr-dot`) and state
+(`~/.local/state/herdr-dot`), and removes the plugin from the bar and from disk.
 
 ## How it works
 
 ```
- the dot and list (HerdrReady.qml, in the Omarchy shell)
+ the dot and list (HerdrDot.qml, in the Omarchy shell)
         │ runs, reads one JSON line per change; sends "go <agent>"
         ▼
- bin/herdr-ready watch ──── Hyprland: which window is in front, which window shows which
+ bin/herdr-dot watch ────── Hyprland: which window is in front, which window shows which
         │                   session (from each terminal's herdr command line)
         ├── relay on this computer ──────────────► every herdr session socket here
         └── relay on each remote host, over SSH ─► every herdr session socket there
 ```
 
-- **The relay** (`bin/herdr_ready_relay.py`, Python standard library only) finds every
+- **The relay** (`bin/herdr_dot_relay.py`, Python standard library only) finds every
   session's socket under `~/.config/herdr/` (checked every 5 seconds for sessions that start or
   stop), subscribes to herdr's events, and re-reads a session whenever one arrives (and once a
   minute regardless). herdr reports agent state changes one pane at a time, so it subscribes to
@@ -95,17 +110,19 @@ plugin's settings and state, and removes the plugin from the bar and from disk.
 - **Finding the window**: for each window on the desktop, the helper looks for a herdr client
   among the programs running in it and reads which session it's attached to: `herdr`,
   `herdr --session NAME`, `herdr session attach NAME`, or `herdr --remote TARGET [--session
-  NAME]`. Remote names are compared after SSH resolves them, so `server` and `drewdunne@server`
+  NAME]`. Remote names are compared after SSH resolves them, so `server` and `me@server`
   match.
 - **Going to an agent**: if a window shows that session, Hyprland focuses it; the terminal
   tells herdr it has focus, and herdr's "focus agent" then moves *that* window to the agent. If
   no window shows the session, the helper focuses the agent first (no window is attached, so
   nothing else moves), switches you to the session's workspace and opens a terminal attached to
-  the session there, which starts on the agent. The session's workspace is the one
-  herdr-session-manager assigns to it (`~/.config/herdr-session-manager/workspaces.json`), or
-  else the first empty workspace (1–9, then 0) that isn't assigned to another session.
+  the session there, which starts on the agent. That's the first empty workspace (1–9, then
+  0), unless `~/.config/herdr-session-manager/workspaces.json` gives the session a workspace of
+  its own, e.g. `{"workspaces": {"3": {"session": "myproject", "remote": "me@server"}}}`
+  (leave out `remote` for a session on this computer). Workspaces assigned there to other
+  sessions are skipped.
 
-`bin/herdr-ready list`, `windows` and `plan local tinyhost` print what the helper sees, for
+`bin/herdr-dot list`, `windows` and `plan local myproject` print what the helper sees, for
 checking things by hand.
 
 ## Limits
@@ -127,3 +144,7 @@ test/run
 Unit tests for the waiting rules and command lines, a round trip of the `hyprland.lua` block on
 a copy, `omarchy plugin validate`, and (when herdr is installed) an end-to-end test that starts a
 throwaway herdr session named `zz-hr-test-<pid>`, fakes agents in it, and deletes it afterwards.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
