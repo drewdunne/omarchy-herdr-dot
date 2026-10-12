@@ -13,4 +13,7 @@ if file then
   end
 end
 
-o.bind(key, "Herdr agents waiting for you", "omarchy-shell gg.arkship.herdr-dot toggle")
+-- Through the shell, not the plugin's own IPC target: every monitor's bar has its own copy of
+-- the widget, and the target only reaches whichever copy claimed it first. The shell opens the
+-- copy on the monitor Hyprland has focused.
+o.bind(key, "Herdr agents waiting for you", "omarchy-shell shell toggle gg.arkship.herdr-dot")
