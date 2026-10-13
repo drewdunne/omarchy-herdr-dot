@@ -118,7 +118,9 @@ first), deletes the plugin's settings (`~/.config/herdr-dot`) and state
   tells herdr it has focus, and herdr's "focus agent" then moves *that* window to the agent. If
   no window shows the session, the helper focuses the agent first (no window is attached, so
   nothing else moves), switches you to the session's workspace and opens a terminal attached to
-  the session there, which starts on the agent. That's the first empty workspace (1–9, then
+  the session there, which starts on the agent. A remote session is attached with
+  `--remote-keybindings server`, so keys bound to the server's commands and plugin actions work
+  (with herdr's default, local keybindings, they're dropped). That's the first empty workspace (1–9, then
   0), unless `~/.config/herdr-session-manager/workspaces.json` gives the session a workspace of
   its own, e.g. `{"workspaces": {"3": {"session": "myproject", "remote": "me@server"}}}`
   (leave out `remote` for a session on this computer). Workspaces assigned there to other

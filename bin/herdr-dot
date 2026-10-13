@@ -702,7 +702,9 @@ class Watcher:
             time.sleep(0.15)
         command = ["herdr"]
         if host != LOCAL:
-            command += ["--remote", self.targets[host]]
+            # The far side's keybindings: with herdr's default (local ones), keys bound to commands,
+            # such as the server's plugin actions, are dropped (herdr 0.9.3; ark-sdlc intent 0069).
+            command += ["--remote", self.targets[host], "--remote-keybindings", "server"]
         if session != "default":
             command += ["--session", session]
         try:
@@ -844,7 +846,7 @@ def cmd_plan(args):
         print("focus window 0x%s on workspace %s, then focus the agent in session %s"
               % (window["address"], window["workspace"], args.session))
     else:
-        command = ["herdr"] + ([] if host == LOCAL else ["--remote", args.target]) + \
+        command = ["herdr"] + ([] if host == LOCAL else ["--remote", args.target, "--remote-keybindings", "server"]) + \
                   ([] if args.session == "default" else ["--session", args.session])
         number = workspace_for(host, args.session, ssh_identity, workspaces_in_use())
         where = "the current workspace" if number is None else \
