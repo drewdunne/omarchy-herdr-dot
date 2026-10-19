@@ -7,7 +7,8 @@ source with the command, so nothing is installed there). Standard library only.
 
 stdout, one JSON object per line:
   {"type":"hello","host":"<hostname>"}
-  {"type":"session","session":"<name>","focus":{"pane":..,"tab":..},"agents":[...]}
+  {"type":"session","session":"<name>","focus":{"pane":..,"tab":..},"agents":[...],
+   "agent_terminals":[the terminal id of every pane with an agent in it]}
   {"type":"gone","session":"<name>"}                 the session stopped
   {"type":"result","id":"<n>","ok":true|false,"error":"..."}
 stdin, one JSON object per line:
@@ -114,7 +115,10 @@ def read_session(path):
         pass
     focus = {"pane": None, "tab": None, "workspace": None}
     agents = []
+    terminals = []  # of panes with an agent running in them: the only ones that can watch another
     for pane in panes:
+        if pane.get("terminal_id") and pane.get("agent"):
+            terminals.append(pane["terminal_id"])
         if pane.get("focused"):
             focus = {"pane": pane.get("pane_id"), "tab": pane.get("tab_id"), "workspace": pane.get("workspace_id")}
         if not pane.get("agent"):
@@ -128,8 +132,9 @@ def read_session(path):
             "status": pane.get("agent_status") or "unknown",
             "title": pane.get("terminal_title_stripped") or pane.get("terminal_title") or "",
             "terminal": pane.get("terminal_id"),
+            "watched_by": (pane.get("tokens") or {}).get("watched_by"),
         })
-    return focus, agents
+    return focus, agents, terminals
 
 
 class Session(threading.Thread):
@@ -146,8 +151,9 @@ class Session(threading.Thread):
         self.stopped.set()
 
     def snapshot(self):
-        focus, agents = read_session(self.path)
-        message = {"type": "session", "session": self.name, "focus": focus, "agents": agents}
+        focus, agents, terminals = read_session(self.path)
+        message = {"type": "session", "session": self.name, "focus": focus, "agents": agents,
+                   "agent_terminals": sorted(terminals)}
         if message != self.last:
             self.last = message
             emit(message)

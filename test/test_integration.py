@@ -201,6 +201,29 @@ class AgainstHerdr(unittest.TestCase):
             os.waitpid(pid, 0)
             os.close(fd)
 
+    def test_6_an_agent_watched_by_another_is_left_to_it(self):
+        # A pane carrying watched_by=<terminal id> is left out while an agent runs in the pane with
+        # that terminal. A plain pane is no watcher; one with an agent is, until the agent quits.
+        watcher = call("workspace.create", {"label": "watcher", "focus": False})["root_pane"]["pane_id"]
+        terminal = {p["pane_id"]: p.get("terminal_id") for p in call("pane.list")["panes"]}[watcher]
+        self.assertTrue(terminal, "herdr gave the watcher's pane no terminal id")
+        call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test",
+                                      "tokens": {"watched_by": terminal}})
+        try:
+            report(self.hidden, "working")
+            report(self.hidden, "blocked")
+            self.assertEqual(listing().get(self.hidden), "blocked", "a pane with no agent in it hid another")
+            report(watcher, "working")
+            self.assertNotIn(self.hidden, listing(), "a watched agent's question was listed")
+            call("pane.release_agent", {"pane_id": watcher, "source": "herdr-dot-test", "agent": "claude"})
+            self.assertEqual(listing().get(self.hidden), "blocked", "it didn't come back once its watcher's agent quit")
+            report(watcher, "working")
+            self.assertNotIn(self.hidden, listing())
+            call("pane.close", {"pane_id": watcher})
+            self.assertEqual(listing().get(self.hidden), "blocked", "it didn't come back once its watcher closed")
+        finally:
+            call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test", "tokens": {"watched_by": None}})
+
 
 if __name__ == "__main__":
     unittest.main()

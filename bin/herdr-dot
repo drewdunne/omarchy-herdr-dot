@@ -556,7 +556,8 @@ class Watcher:
             for pane in prev.get("agents", {}):
                 if pane not in agents:
                     self.stop_waiting(self.key(host, name, pane), "pane closed")
-        self.sessions[sk] = {"focus": message.get("focus") or {}, "agents": agents}
+        self.sessions[sk] = {"focus": message.get("focus") or {}, "agents": agents,
+                             "agent_terminals": set(message.get("agent_terminals") or [])}
         self.dirty = True
 
     def on_relay(self, host, message):
@@ -619,6 +620,16 @@ class Watcher:
             self.dirty = True
 
     # ------------------------------------------------------------ output
+    def watched(self, host, agent):
+        """Whether another agent is watching this one for you: its pane carries the token
+        watched_by=<terminal id>, and an agent is still running in the pane with that terminal on
+        the same host. The watcher shows instead when it needs you; once its agent quits or its
+        pane closes, this one shows again."""
+        watcher = agent.get("watched_by")
+        if not watcher or watcher == agent.get("terminal"):
+            return False
+        return any(watcher in data.get("agent_terminals", ()) for (h, _), data in self.sessions.items() if h == host)
+
     def state(self):
         groups = {}
         for key, since in self.waiting.items():
@@ -626,7 +637,7 @@ class Watcher:
             if host not in self.hosts or not self.hosts[host].ok:
                 continue
             agent = self.sessions.get((host, name), {}).get("agents", {}).get(pane)
-            if not agent or agent.get("status") == "working":
+            if not agent or agent.get("status") == "working" or self.watched(host, agent):
                 continue
             blocked = agent.get("status") == "blocked"
             if blocked and key in self.visible:

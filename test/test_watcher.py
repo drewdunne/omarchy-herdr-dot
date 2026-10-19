@@ -23,9 +23,10 @@ class Clock:
         return self.now
 
 
-def agent(pane, status, tab="w1:t1", name=None, title="task"):
+def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None):
     return {"pane": pane, "tab": tab, "workspace": tab.split(":")[0], "agent": "claude",
-            "name": name, "status": status, "title": title, "terminal": "t-" + pane}
+            "name": name, "status": status, "title": title, "terminal": "t-" + pane,
+            "watched_by": watched_by}
 
 
 class ParseClient(unittest.TestCase):
@@ -70,9 +71,11 @@ class Waiting(unittest.TestCase):
     def tearDown(self):
         hr.time.time = self.real_time
 
-    def session(self, name, agents, focus_tab=None):
-        self.w.on_relay(hr.LOCAL, {"type": "session", "session": name, "agents": agents,
-                                   "focus": {"pane": None, "tab": focus_tab, "workspace": None}})
+    def session(self, name, agents, focus_tab=None, terminals=None, host=hr.LOCAL):
+        if terminals is None:
+            terminals = [a["terminal"] for a in agents]
+        self.w.on_relay(host, {"type": "session", "session": name, "agents": agents, "agent_terminals": terminals,
+                               "focus": {"pane": None, "tab": focus_tab, "workspace": None}})
 
     def keys(self):
         return [a["key"] for g in self.w.state()["groups"] for a in g["agents"]]
@@ -180,6 +183,30 @@ class Waiting(unittest.TestCase):
         self.assertEqual([g["session"] for g in state["groups"]], ["a", "b"])
         self.assertEqual([a["pane"] for a in state["groups"][0]["agents"]], ["w1:p2", "w1:p1"])
         self.assertEqual((state["count"], state["blocked"]), (3, 1))
+
+    def test_an_agent_watched_by_another_is_left_to_it_while_the_watcher_is_open(self):
+        # An agent another agent watches for you (its pane carries watched_by=<terminal>) isn't
+        # shown while a pane with that terminal is open on the same host, in any session. The
+        # watcher shows instead when it needs you, and the agent shows again once it's gone.
+        self.session("work", [agent("w1:p1", "working", watched_by="t-w9:p1"), agent("w1:p2", "working")])
+        self.session("watch", [agent("w9:p1", "working")])
+        self.session("work", [agent("w1:p1", "done", watched_by="t-w9:p1"), agent("w1:p2", "done")])
+        self.assertEqual(self.keys(), ["local|work|w1:p2"])
+        self.session("work", [agent("w1:p1", "blocked", watched_by="t-w9:p1"), agent("w1:p2", "done")])
+        self.assertEqual(self.w.state()["blocked"], 0, "its question goes to the watcher, not to you")
+        self.session("watch", [agent("w9:p1", "done")])
+        self.assertEqual(sorted(self.keys()), ["local|watch|w9:p1", "local|work|w1:p2"])
+        self.session("watch", [], terminals=[])  # the watcher's agent quit, or its pane closed
+        self.assertEqual(sorted(self.keys()), ["local|work|w1:p1", "local|work|w1:p2"])
+        self.assertEqual(self.w.state()["blocked"], 1)
+
+    def test_a_watcher_that_isnt_open_or_is_on_another_host_hides_nothing(self):
+        self.w.hosts["far"] = hr.Host("far", "far", "far", self.w.events)
+        self.w.hosts["far"].ok = True
+        self.session("s", [agent("w1:p1", "done", watched_by="t-gone"), agent("w1:p2", "done", watched_by="t-w9:p1"),
+                           agent("w1:p3", "done", watched_by="t-w1:p3")])
+        self.session("s", [agent("w9:p1", "working")], host="far")
+        self.assertEqual(sorted(self.keys()), ["local|s|w1:p1", "local|s|w1:p2", "local|s|w1:p3"])
 
     def test_groups_name_session_and_host(self):
         self.session("myproject", [agent("w1:p1", "done")])

@@ -40,6 +40,12 @@ Dot keeps its own record:
   list, when it starts working again, or when its pane closes.
 - An agent **asking a question** stays on the list until it's answered. It's hidden only
   while it's in front of you.
+- An agent **another agent is watching for you** isn't shown at all. Its pane carries the token
+  `watched_by=<terminal id>`, naming the watching agent's terminal
+  (`herdr pane report-metadata <pane> --source <yours> --token watched_by=<terminal id>`), and an
+  agent is running in the pane with that terminal on the same machine. Its questions go to the
+  watcher, which shows here itself when it needs you. Once the watcher's agent quits or its pane
+  closes, the agent shows again as usual.
 - When the plugin starts (login, shell restart), agents herdr reports as asking or finished
   and unseen count, plus any it was already counting before the restart
   (`~/.local/state/herdr-dot/waiting.json`).
