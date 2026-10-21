@@ -224,6 +224,38 @@ class Waiting(unittest.TestCase):
         self.session("s", [agent("w1:p2", "blocked", role="reviewer")])  # another role, or none, shows
         self.assertEqual(self.keys(), ["local|s|w1:p2"])
 
+    def test_scratch_sessions_are_never_listed_or_counted(self):
+        # A temporary session (its name starts with zz-: an agent's probe or test) is never listed,
+        # counted or saved, even while its agents ask, here or on an SSH host. One seen late (its
+        # agents remembered from before a restart) or renamed to zz- drops out as if it closed.
+        self.w.hosts["far"] = hr.Host("far", "far", "far", self.w.events)
+        self.w.hosts["far"].ok = True
+        self.w.restored = {"local|zz-probe|w1:p1": 900.0, "local|s|w1:p1": 900.0}
+        self.session("zz-probe", [agent("w1:p1", "idle"), agent("w1:p2", "blocked"), agent("w1:p3", "done")])
+        self.session("zz-probe", [agent("w1:p1", "working"), agent("w2:p1", "working")], host="far")
+        self.session("zz-probe", [agent("w1:p1", "blocked"), agent("w2:p1", "done")], host="far")
+        self.session("s", [agent("w1:p1", "idle")])
+        self.assertEqual(self.keys(), ["local|s|w1:p1"])
+        self.assertEqual((self.w.state()["count"], self.w.state()["blocked"]), (1, 0))
+        self.assertEqual(sorted(self.w.waiting), ["local|s|w1:p1"], "a temporary session's agent is never saved")
+        self.assertEqual(self.w.restored, {"local|s|w1:p1": 900.0}, "what it remembered from before is dropped")
+        self.assertEqual(list(self.w.sessions), [(hr.LOCAL, "s")], "nor is the session itself kept, on either host")
+        self.session("probe", [agent("w1:p1", "blocked")])
+        self.assertIn("local|probe|w1:p1", self.keys())
+        self.w.on_relay(hr.LOCAL, {"type": "gone", "session": "probe"})  # renamed: the old name goes,
+        self.session("zz-probe2", [agent("w1:p1", "blocked")])             # and the new one is never read
+        self.assertEqual(self.keys(), ["local|s|w1:p1"])
+        self.session("zz", [agent("w1:p1", "done")])  # only a name that starts with zz- is temporary
+        self.session("my-zz-probe", [agent("w1:p1", "done")])
+        self.assertEqual(sorted(self.keys()), ["local|my-zz-probe|w1:p1", "local|s|w1:p1", "local|zz|w1:p1"])
+
+    def test_scratch_sessions_are_listed_for_the_plugins_own_tests(self):
+        # The end-to-end test fakes agents in its own zz-hr-test-<pid> session, which the bar must
+        # never show; it reads them with --list-temporary.
+        self.w.list_temporary = True
+        self.session("zz-hr-test-1", [agent("w1:p1", "blocked")])
+        self.assertEqual(self.keys(), ["local|zz-hr-test-1|w1:p1"])
+
     def test_sessions_that_no_longer_exist_are_forgotten(self):
         # The relay lists every session with a socket; what the state file remembered for any
         # other session of that host is dropped, as is what was counted before a reconnect.

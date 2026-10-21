@@ -17,7 +17,8 @@ What "waiting for you" means (see README): an agent starts waiting when it leave
 of you for a second (its tab shown in the herdr window that has focus on your
 desktop), when you go to it from the list, or when it starts working again. An agent
 asking a question stays on the list until it is answered, except while it is in
-front of you. A helper (a pane with the token role=helper) is never listed.
+front of you. A helper (a pane with the token role=helper) is never listed, nor is any
+agent in a temporary session, one whose name starts with zz- (an agent's probe or test).
 
 Every machine is read by herdr_dot_relay.py: run directly here, and over SSH on
 remote targets (its source travels with the command; nothing is installed there).
@@ -44,6 +45,7 @@ TICK = 0.5
 WINDOW_RESCAN = 15.0
 RETRY_MAX = 60.0
 FINISHED_STATES = ("done", "idle")
+TEMPORARY = "zz-"         # a session whose name starts with this is an agent's probe or test
 
 
 def log(*parts):
@@ -411,9 +413,10 @@ def hyprland_events(events):
 # ---------------------------------------------------------------- the list
 
 class Watcher:
-    def __init__(self, remotes, seen_after=SEEN_AFTER, persist=False):
+    def __init__(self, remotes, seen_after=SEEN_AFTER, persist=False, list_temporary=False):
         self.events = queue.Queue()
         self.persist = persist  # only the running watcher keeps the state file
+        self.list_temporary = list_temporary  # for the plugin's own tests, which use a zz- session
         self.seen_after = seen_after
         self.hosts = {}
         self.host_order = [LOCAL]
@@ -532,8 +535,17 @@ class Watcher:
         answers its questions, so a helper is never listed or counted, even while it asks."""
         return agent.get("role") == "helper"
 
+    def temporary(self, name):
+        """Whether the session is a temporary one an agent made for a probe or a test: its name starts
+        with zz-. Nobody is waiting on its agents, so none is ever listed or counted, even while it
+        asks."""
+        return not self.list_temporary and (name or "").startswith(TEMPORARY)
+
     def on_session(self, host, message):
         name = message.get("session")
+        if self.temporary(name):  # one seen late, or renamed to zz-, leaves as if it closed
+            self.forget_sessions(host, lambda other: other == name, "temporary session")
+            return
         sk = (host, name)
         prev = self.sessions.get(sk) or self.stash.pop(sk, None)
         agents = {}
@@ -839,7 +851,7 @@ def remotes_from(values):
 
 
 def cmd_list(args):
-    watcher = Watcher(remotes_arg(args))
+    watcher = Watcher(remotes_arg(args), list_temporary=args.list_temporary)
     watcher.start()
     deadline = time.time() + args.wait
     while time.time() < deadline:
@@ -901,13 +913,17 @@ def main():
     listing.add_argument("--local-only", action="store_true")
     listing.add_argument("--json", action="store_true")
     listing.add_argument("--wait", type=float, default=12.0)
+    for command in (watch, listing):
+        command.add_argument("--list-temporary", action="store_true",
+                             help="also list agents in temporary sessions (names starting with zz-); "
+                                  "for the plugin's own tests")
     sub.add_parser("windows")
     plan = sub.add_parser("plan")
     plan.add_argument("target")
     plan.add_argument("session")
     args = parser.parse_args()
     if args.command == "watch":
-        Watcher(remotes_arg(args), args.seen_after, persist=True).watch()
+        Watcher(remotes_arg(args), args.seen_after, persist=True, list_temporary=args.list_temporary).watch()
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "windows":

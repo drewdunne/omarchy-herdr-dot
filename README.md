@@ -51,6 +51,11 @@ Dot keeps its own record:
   (`herdr pane report-metadata <pane> --source <yours> --token role=helper`), and the agent that
   started it reads its results and answers its questions. Take the token off and it shows
   again as usual.
+- An agent in a **temporary session** isn't shown at all either, finished or asking: a session
+  whose name starts with `zz-` is one an agent made for a probe or a test (`herdr --session
+  zz-<what> server`), and nobody is waiting on its agents. Nothing about it is counted or saved,
+  on this computer or on a remote host. Name any session you make for a short experiment that
+  way, and delete it afterwards.
 - When the plugin starts (login, shell restart), agents herdr reports as asking or finished
   and unseen count, plus any it was already counting before the restart
   (`~/.local/state/herdr-dot/waiting.json`). What it remembers for a session that no longer
@@ -160,6 +165,8 @@ test/run
 Unit tests for the waiting rules and command lines, a round trip of the `hyprland.lua` block on
 a copy, `omarchy plugin validate`, and (when herdr is installed) an end-to-end test that starts a
 throwaway herdr session named `zz-hr-test-<pid>`, fakes agents in it, and deletes it afterwards.
+Its name keeps the bar's own Herdr Dot from showing those agents while the test runs; the test
+reads them with `--list-temporary`, and checks they're left out without it.
 
 ## License
 

@@ -1,7 +1,10 @@
 """End to end against a real herdr: a throwaway session (zz-hr-test-<pid>) is started
 headless, agents are faked in it with herdr's own pane.report_agent, and the relay and
 `herdr-dot list` must report them. The session is stopped and deleted afterwards.
-Skipped when herdr isn't installed. Reads, but never changes, any other session."""
+Skipped when herdr isn't installed. Reads, but never changes, any other session.
+
+Its name starts with zz-, so the bar's own Herdr Dot never lists these agents; the tests read
+them with --list-temporary, and test_8 checks they're left out without it."""
 
 import json
 import os
@@ -46,8 +49,8 @@ def statuses():
 
 
 def listing():
-    out = subprocess.run([HELPER, "list", "--local-only", "--json", "--wait", "6"], capture_output=True, text=True,
-                         timeout=30, env=ENV).stdout
+    out = subprocess.run([HELPER, "list", "--local-only", "--json", "--wait", "6", "--list-temporary"],
+                         capture_output=True, text=True, timeout=30, env=ENV).stdout
     state = json.loads(out)
     for group in state["groups"]:
         if group["session"] == NAME and group["hostLabel"] == "":
@@ -142,8 +145,8 @@ class AgainstHerdr(unittest.TestCase):
         import select
         call("pane.focus", {"pane_id": self.shown})  # herdr shows this agent's workspace again
         report(self.shown, "working")
-        watch = subprocess.Popen([HELPER, "watch", "--local-only"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 text=True, env=ENV)
+        watch = subprocess.Popen([HELPER, "watch", "--local-only", "--list-temporary"], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, text=True, env=ENV)
 
         def wait_for(predicate, seconds):
             """Reads the watcher's lines until predicate(this session's agents) holds."""
@@ -242,6 +245,18 @@ class AgainstHerdr(unittest.TestCase):
         finally:
             call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test", "tokens": {"role": None}})
         self.assertEqual(listing().get(self.hidden), "blocked", "it didn't come back once the label came off")
+
+    def test_8_a_temporary_session_is_never_listed(self):
+        # This session's name starts with zz-, like any agent's probe or test, so without
+        # --list-temporary its agents aren't listed, even while one asks.
+        report(self.hidden, "working")
+        report(self.hidden, "blocked")
+        self.assertEqual(listing().get(self.hidden), "blocked")
+        out = subprocess.run([HELPER, "list", "--local-only", "--json", "--wait", "6"], capture_output=True,
+                             text=True, timeout=30, env=ENV).stdout
+        state = json.loads(out)
+        self.assertNotIn(NAME, [g["session"] for g in state["groups"]], "a temporary session's question was listed")
+        self.assertNotIn(NAME, state["hosts"][0]["sessions"])
 
 
 if __name__ == "__main__":
