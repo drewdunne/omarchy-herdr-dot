@@ -23,10 +23,10 @@ class Clock:
         return self.now
 
 
-def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None):
+def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None, role=None):
     return {"pane": pane, "tab": tab, "workspace": tab.split(":")[0], "agent": "claude",
             "name": name, "status": status, "title": title, "terminal": "t-" + pane,
-            "watched_by": watched_by}
+            "watched_by": watched_by, "role": role}
 
 
 class ParseClient(unittest.TestCase):
@@ -208,6 +208,40 @@ class Waiting(unittest.TestCase):
         self.session("s", [agent("w9:p1", "working")], host="far")
         self.assertEqual(sorted(self.keys()), ["local|s|w1:p1", "local|s|w1:p2", "local|s|w1:p3"])
 
+    def test_helpers_are_never_listed_or_counted(self):
+        # A helper (role=helper: a reviewer or tester another agent started) is left to the agent
+        # that started it, finished or asking. Labeled later, it leaves the list as if it closed.
+        self.session("s", [agent("w1:p1", "done", role="helper"), agent("w1:p2", "blocked", role="helper"),
+                           agent("w1:p3", "done")])
+        self.assertEqual(self.keys(), ["local|s|w1:p3"])
+        self.assertEqual((self.w.state()["count"], self.w.state()["blocked"]), (1, 0))
+        self.session("s", [agent("w1:p1", "working", role="helper"), agent("w1:p2", "blocked", role="helper"),
+                           agent("w1:p3", "done", role="helper")])
+        self.session("s", [agent("w1:p1", "idle", role="helper"), agent("w1:p2", "blocked", role="helper"),
+                           agent("w1:p3", "done", role="helper")])
+        self.assertEqual(self.keys(), [])
+        self.assertEqual(self.w.waiting, {}, "a helper is never kept, so never saved")
+        self.session("s", [agent("w1:p2", "blocked", role="reviewer")])  # another role, or none, shows
+        self.assertEqual(self.keys(), ["local|s|w1:p2"])
+
+    def test_sessions_that_no_longer_exist_are_forgotten(self):
+        # The relay lists every session with a socket; what the state file remembered for any
+        # other session of that host is dropped, as is what was counted before a reconnect.
+        self.w.restored = {"local|s|w1:p1": 900.0, "local|deleted|w1:p1": 800.0, "far|deleted|w1:p1": 700.0}
+        self.w.on_relay(hr.LOCAL, {"type": "sessions", "sessions": ["s", "kept"]})
+        self.assertEqual(self.w.restored, {"local|s|w1:p1": 900.0, "far|deleted|w1:p1": 700.0})
+        self.session("kept", [agent("w1:p1", "done")])
+        self.w.on_relay(hr.LOCAL, {"type": "hello", "host": "x"})  # reconnected; "kept" went meanwhile
+        self.w.on_relay(hr.LOCAL, {"type": "sessions", "sessions": ["s"]})
+        self.assertEqual(self.w.waiting, {})
+        self.assertNotIn((hr.LOCAL, "kept"), self.w.stash)
+
+    def test_a_stopped_session_forgets_what_it_remembered(self):
+        # A socket left behind by a session that isn't running reports "gone" without ever being read.
+        self.w.restored = {"local|stale|w1:p1": 900.0, "local|s|w1:p1": 900.0}
+        self.w.on_relay(hr.LOCAL, {"type": "gone", "session": "stale"})
+        self.assertEqual(self.w.restored, {"local|s|w1:p1": 900.0})
+
     def test_groups_name_session_and_host(self):
         self.session("myproject", [agent("w1:p1", "done")])
         group = self.w.state()["groups"][0]
@@ -242,6 +276,14 @@ class Settings(unittest.TestCase):
     def test_save_keeps_remembered_agents_not_read_yet(self):
         w = hr.Watcher([], persist=True)
         w.restored = {"local|s|w1:p1": 900.0, "gone-host|s|w1:p1": 800.0}
+        w.save()
+        with open(hr.STATE_FILE) as handle:
+            self.assertEqual(json.load(handle)["waiting"], {"local|s|w1:p1": 900.0})
+
+    def test_save_drops_sessions_that_no_longer_exist(self):
+        w = hr.Watcher([], persist=True)
+        w.restored = {"local|s|w1:p1": 900.0, "local|zz-old|w1:p1": 800.0}
+        w.on_relay(hr.LOCAL, {"type": "sessions", "sessions": ["s"]})
         w.save()
         with open(hr.STATE_FILE) as handle:
             self.assertEqual(json.load(handle)["waiting"], {"local|s|w1:p1": 900.0})

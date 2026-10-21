@@ -46,9 +46,15 @@ Dot keeps its own record:
   agent is running in the pane with that terminal on the same machine. Its questions go to the
   watcher, which shows here itself when it needs you. Once the watcher's agent quits or its pane
   closes, the agent shows again as usual.
+- A **helper** isn't shown at all, finished or asking: an agent another agent started to help
+  it, such as a reviewer or a tester. Its pane carries the token `role=helper`
+  (`herdr pane report-metadata <pane> --source <yours> --token role=helper`), and the agent that
+  started it reads its results and answers its questions. Take the token off and it shows
+  again as usual.
 - When the plugin starts (login, shell restart), agents herdr reports as asking or finished
   and unseen count, plus any it was already counting before the restart
-  (`~/.local/state/herdr-dot/waiting.json`).
+  (`~/.local/state/herdr-dot/waiting.json`). What it remembers for a session that no longer
+  exists is dropped.
 
 ## What you need
 

@@ -7,6 +7,7 @@ source with the command, so nothing is installed there). Standard library only.
 
 stdout, one JSON object per line:
   {"type":"hello","host":"<hostname>"}
+  {"type":"sessions","sessions":[every session name with a socket here]}   whenever that changes
   {"type":"session","session":"<name>","focus":{"pane":..,"tab":..},"agents":[...],
    "agent_terminals":[the terminal id of every pane with an agent in it]}
   {"type":"gone","session":"<name>"}                 the session stopped
@@ -133,6 +134,7 @@ def read_session(path):
             "title": pane.get("terminal_title_stripped") or pane.get("terminal_title") or "",
             "terminal": pane.get("terminal_id"),
             "watched_by": (pane.get("tokens") or {}).get("watched_by"),
+            "role": (pane.get("tokens") or {}).get("role"),
         })
     return focus, agents, terminals
 
@@ -248,8 +250,13 @@ def focus(sessions, command):
 
 
 def scanner(sessions, lock, stop):
+    names = None
     while not stop.is_set():
         found = session_sockets()
+        if sorted(found) != names:
+            # Every session this machine has, so the watcher can forget ones that no longer exist.
+            names = sorted(found)
+            emit({"type": "sessions", "sessions": names})
         with lock:
             for name, path in found.items():
                 if name not in sessions:

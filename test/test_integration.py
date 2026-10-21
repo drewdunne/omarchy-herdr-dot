@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import unittest
 
@@ -18,6 +19,7 @@ CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~
 NAME = "zz-hr-test-%d" % os.getpid()
 SOCK = os.path.join(CONFIG, "sessions", NAME, "herdr.sock")
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+ENV["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="herdr-dot-test-")  # never the real waiting.json
 
 
 def call(method, params=None):
@@ -96,13 +98,17 @@ class AgainstHerdr(unittest.TestCase):
                                  text=True, env=ENV)
         try:
             seen = None
+            names = []
             deadline = time.time() + 10
             while time.time() < deadline:
                 message = json.loads(relay.stdout.readline())
+                if message.get("type") == "sessions":
+                    names = message["sessions"]
                 if message.get("type") == "session" and message["session"] == NAME:
                     seen = {a["pane"]: a["status"] for a in message["agents"]}
                     break
             self.assertEqual(seen, {self.shown: "idle", self.hidden: "done"})
+            self.assertIn(NAME, names, "the relay lists the sessions it has before reading them")
 
             report(self.shown, "blocked")
             deadline = time.time() + 5
@@ -223,6 +229,19 @@ class AgainstHerdr(unittest.TestCase):
             self.assertEqual(listing().get(self.hidden), "blocked", "it didn't come back once its watcher closed")
         finally:
             call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test", "tokens": {"watched_by": None}})
+
+    def test_7_a_helper_is_never_listed(self):
+        # A pane carrying role=helper (a reviewer or tester another agent started) isn't listed,
+        # even while it asks; with the label taken off, it's an agent like any other.
+        report(self.hidden, "working")
+        report(self.hidden, "blocked")
+        call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test",
+                                      "tokens": {"role": "helper"}})
+        try:
+            self.assertNotIn(self.hidden, listing(), "a helper's question was listed")
+        finally:
+            call("pane.report_metadata", {"pane_id": self.hidden, "source": "herdr-dot-test", "tokens": {"role": None}})
+        self.assertEqual(listing().get(self.hidden), "blocked", "it didn't come back once the label came off")
 
 
 if __name__ == "__main__":

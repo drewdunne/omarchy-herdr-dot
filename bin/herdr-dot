@@ -17,7 +17,7 @@ What "waiting for you" means (see README): an agent starts waiting when it leave
 of you for a second (its tab shown in the herdr window that has focus on your
 desktop), when you go to it from the list, or when it starts working again. An agent
 asking a question stays on the list until it is answered, except while it is in
-front of you.
+front of you. A helper (a pane with the token role=helper) is never listed.
 
 Every machine is read by herdr_dot_relay.py: run directly here, and over SSH on
 remote targets (its source travels with the command; nothing is installed there).
@@ -525,13 +525,21 @@ class Watcher:
         self.dirty = True
 
     # ------------------------------------------------------------ events
+    @staticmethod
+    def helper(agent):
+        """Whether the agent is a helper another agent started for itself (a reviewer, a tester):
+        its pane carries the token role=helper. The agent that started it reads its results and
+        answers its questions, so a helper is never listed or counted, even while it asks."""
+        return agent.get("role") == "helper"
+
     def on_session(self, host, message):
         name = message.get("session")
         sk = (host, name)
         prev = self.sessions.get(sk) or self.stash.pop(sk, None)
         agents = {}
         for agent in message.get("agents") or []:
-            agents[agent.get("pane")] = agent
+            if not self.helper(agent):  # a pane labeled a helper later leaves, as if it closed
+                agents[agent.get("pane")] = agent
         for pane, agent in agents.items():
             key = self.key(host, name, pane)
             status = agent.get("status")
@@ -560,20 +568,33 @@ class Watcher:
                              "agent_terminals": set(message.get("agent_terminals") or [])}
         self.dirty = True
 
+    def forget_sessions(self, host, gone, why):
+        """Drops everything kept for these sessions of a host: what it was counting, and what the
+        state file remembered from before a restart, so a session that's gone for good doesn't
+        stay in waiting.json."""
+        for sk in [sk for sk in list(self.sessions) + list(self.stash) if sk[0] == host and gone(sk[1])]:
+            self.sessions.pop(sk, None)
+            self.stash.pop(sk, None)
+        for key in [k for k in self.waiting if k.split("|", 2)[0] == host and gone(k.split("|", 2)[1])]:
+            self.stop_waiting(key, why)
+        for key in [k for k in self.restored if k.split("|", 2)[0] == host and gone(k.split("|", 2)[1])]:
+            del self.restored[key]
+            self.changed()
+        self.dirty = True
+
     def on_relay(self, host, message):
         kind = message.get("type")
         if kind == "hello":
             for sk in [sk for sk in self.sessions if sk[0] == host]:
                 self.stash[sk] = self.sessions.pop(sk)
             self.dirty = True
+        elif kind == "sessions":
+            names = set(message.get("sessions") or [])
+            self.forget_sessions(host, lambda name: name not in names, "session no longer exists")
         elif kind == "session":
             self.on_session(host, message)
         elif kind == "gone":
-            sk = (host, message.get("session"))
-            data = self.sessions.pop(sk, None) or self.stash.pop(sk, None)
-            for pane in (data or {}).get("agents", {}):
-                self.stop_waiting(self.key(host, sk[1], pane), "session stopped")
-            self.dirty = True
+            self.forget_sessions(host, lambda name: name == message.get("session"), "session stopped")
 
     def on_hypr(self, name, data):
         if name == "activewindowv2":
