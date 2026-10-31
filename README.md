@@ -50,7 +50,9 @@ Dot keeps its own record:
   it, such as a reviewer or a tester. Its pane carries the token `role=helper`
   (`herdr pane report-metadata <pane> --source <yours> --token role=helper`), and the agent that
   started it reads its results and answers its questions. Take the token off and it shows
-  again as usual.
+  again as usual. A helper that is a **child intent's agent** (work of its own, which an agent
+  started in a tab of its own workspace) also carries `ark_child=<its intent>`, and shows as
+  usual: it's out of herdr's Agents list, but it may be asking you something.
 - An agent in a **temporary session** isn't shown at all either, finished or asking: a session
   whose name starts with `zz-` is one an agent made for a probe or a test (`herdr --session
   zz-<what> server`), and nobody is waiting on its agents. Nothing about it is counted or saved,

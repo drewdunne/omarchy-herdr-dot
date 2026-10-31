@@ -23,10 +23,10 @@ class Clock:
         return self.now
 
 
-def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None, role=None):
+def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None, role=None, child=None):
     return {"pane": pane, "tab": tab, "workspace": tab.split(":")[0], "agent": "claude",
             "name": name, "status": status, "title": title, "terminal": "t-" + pane,
-            "watched_by": watched_by, "role": role}
+            "watched_by": watched_by, "role": role, "child": child}
 
 
 class ParseClient(unittest.TestCase):
@@ -223,6 +223,19 @@ class Waiting(unittest.TestCase):
         self.assertEqual(self.w.waiting, {}, "a helper is never kept, so never saved")
         self.session("s", [agent("w1:p2", "blocked", role="reviewer")])  # another role, or none, shows
         self.assertEqual(self.keys(), ["local|s|w1:p2"])
+
+    def test_a_child_intents_agent_shows_though_labeled_a_helper(self):
+        # A child intent's agent runs in a tab of its parent's workspace, labeled a helper to stay
+        # out of herdr's Agents list, with ark_child=<its intent>: it's work you may talk to, so it
+        # shows here, asking or finished, like any agent; a plain helper beside it still doesn't.
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "blocked", role="helper", child="0262"),
+                           agent("w1:p3", "blocked", role="helper")])
+        self.assertEqual(self.keys(), ["local|s|w1:p2"])
+        self.assertEqual((self.w.state()["count"], self.w.state()["blocked"]), (1, 1))
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "working", role="helper", child="0262")])
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "done", role="helper", child="0262")])
+        self.assertEqual(self.keys(), ["local|s|w1:p2"])
+        self.assertEqual(self.w.state()["blocked"], 0)
 
     def test_scratch_sessions_are_never_listed_or_counted(self):
         # A temporary session (its name starts with zz-: an agent's probe or test) is never listed,

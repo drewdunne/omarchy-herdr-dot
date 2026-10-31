@@ -135,6 +135,7 @@ def read_session(path):
             "terminal": pane.get("terminal_id"),
             "watched_by": (pane.get("tokens") or {}).get("watched_by"),
             "role": (pane.get("tokens") or {}).get("role"),
+            "child": (pane.get("tokens") or {}).get("ark_child"),
         })
     return focus, agents, terminals
 

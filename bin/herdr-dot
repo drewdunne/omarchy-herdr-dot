@@ -17,8 +17,9 @@ What "waiting for you" means (see README): an agent starts waiting when it leave
 of you for a second (its tab shown in the herdr window that has focus on your
 desktop), when you go to it from the list, or when it starts working again. An agent
 asking a question stays on the list until it is answered, except while it is in
-front of you. A helper (a pane with the token role=helper) is never listed, nor is any
-agent in a temporary session, one whose name starts with zz- (an agent's probe or test).
+front of you. A helper (a pane with the token role=helper) is never listed, unless it is a
+child intent's agent (also ark_child=<intent>), nor is any agent in a temporary session, one
+whose name starts with zz- (an agent's probe or test).
 
 Every machine is read by herdr_dot_relay.py: run directly here, and over SSH on
 remote targets (its source travels with the command; nothing is installed there).
@@ -532,8 +533,10 @@ class Watcher:
     def helper(agent):
         """Whether the agent is a helper another agent started for itself (a reviewer, a tester):
         its pane carries the token role=helper. The agent that started it reads its results and
-        answers its questions, so a helper is never listed or counted, even while it asks."""
-        return agent.get("role") == "helper"
+        answers its questions, so a helper is never listed or counted, even while it asks. A child
+        intent's agent (also ark_child=<its intent>) is work of its own you may talk to, kept out
+        of herdr's Agents list but not out of here, so it shows like any agent."""
+        return agent.get("role") == "helper" and not agent.get("child")
 
     def temporary(self, name):
         """Whether the session is a temporary one an agent made for a probe or a test: its name starts
