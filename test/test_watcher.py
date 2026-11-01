@@ -23,10 +23,11 @@ class Clock:
         return self.now
 
 
-def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None, role=None, child=None):
+def agent(pane, status, tab="w1:t1", name=None, title="task", watched_by=None, role=None, child=None,
+          waiting_on=None):
     return {"pane": pane, "tab": tab, "workspace": tab.split(":")[0], "agent": "claude",
             "name": name, "status": status, "title": title, "terminal": "t-" + pane,
-            "watched_by": watched_by, "role": role, "child": child}
+            "watched_by": watched_by, "role": role, "child": child, "waiting_on": waiting_on}
 
 
 class ParseClient(unittest.TestCase):
@@ -236,6 +237,27 @@ class Waiting(unittest.TestCase):
         self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "done", role="helper", child="0262")])
         self.assertEqual(self.keys(), ["local|s|w1:p2"])
         self.assertEqual(self.w.state()["blocked"], 0)
+
+    def test_an_agent_waiting_on_its_own_work_isnt_listed_while_it_says_so(self):
+        # A child intent's agent that ends its turn waiting on its reviewers carries
+        # ark_waiting=<what> (ark-sdlc's pinboard tool, intent 0387): nothing waits on you, so it
+        # isn't listed or counted. Asking a question it shows, and once the token comes off (its
+        # status changed while it sat finished) it shows again as finished.
+        child = dict(role="helper", child="0356")
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "working", **child)])
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "done", waiting_on="Codex's review", **child)])
+        self.assertEqual(self.keys(), [])
+        self.assertEqual(self.w.state()["count"], 0)
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "blocked", waiting_on="Codex's review", **child)])
+        self.assertEqual(self.keys(), ["local|s|w1:p2"])
+        self.assertEqual(self.w.state()["blocked"], 1)
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "idle", waiting_on="Codex's review", **child)])
+        self.assertEqual(self.keys(), [])
+        self.session("s", [agent("w1:p1", "working"), agent("w1:p2", "idle", **child)])
+        self.assertEqual(self.keys(), ["local|s|w1:p2"])
+        # Any agent's pane may carry it, not only a child's.
+        self.session("s", [agent("w1:p1", "done", waiting_on="the build"), agent("w1:p2", "working", **child)])
+        self.assertEqual(self.keys(), [])
 
     def test_scratch_sessions_are_never_listed_or_counted(self):
         # A temporary session (its name starts with zz-: an agent's probe or test) is never listed,

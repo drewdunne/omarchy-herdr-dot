@@ -53,6 +53,11 @@ Dot keeps its own record:
   again as usual. A helper that is a **child intent's agent** (work of its own, which an agent
   started in a tab of its own workspace) also carries `ark_child=<its intent>`, and shows as
   usual: it's out of herdr's Agents list, but it may be asking you something.
+- A finished agent **waiting on its own work** isn't shown while it says so: its pane carries
+  the token `ark_waiting=<what>` (its reviewers, a build;
+  `herdr pane report-metadata <pane> --source <yours> --token ark_waiting=<what>`), which ark-sdlc's
+  pinboard tool sets for a child intent's agent while its status is waiting on something other
+  than you. It shows again once the token comes off, and asking you a question it shows as usual.
 - An agent in a **temporary session** isn't shown at all either, finished or asking: a session
   whose name starts with `zz-` is one an agent made for a probe or a test (`herdr --session
   zz-<what> server`), and nobody is waiting on its agents. Nothing about it is counted or saved,

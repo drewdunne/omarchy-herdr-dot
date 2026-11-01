@@ -19,7 +19,9 @@ desktop), when you go to it from the list, or when it starts working again. An a
 asking a question stays on the list until it is answered, except while it is in
 front of you. A helper (a pane with the token role=helper) is never listed, unless it is a
 child intent's agent (also ark_child=<intent>), nor is any agent in a temporary session, one
-whose name starts with zz- (an agent's probe or test).
+whose name starts with zz- (an agent's probe or test). A finished agent whose pane says it waits
+on something else (the token ark_waiting=<what>: its reviewers, a build) isn't listed while it
+says so; asking a question, it is.
 
 Every machine is read by herdr_dot_relay.py: run directly here, and over SSH on
 remote targets (its source travels with the command; nothing is installed there).
@@ -676,6 +678,8 @@ class Watcher:
             if not agent or agent.get("status") == "working" or self.watched(host, agent):
                 continue
             blocked = agent.get("status") == "blocked"
+            if agent.get("waiting_on") and not blocked:
+                continue  # finished, but waiting on its own work, not on you
             if blocked and key in self.visible:
                 continue
             groups.setdefault((host, name), []).append({

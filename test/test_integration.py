@@ -258,6 +258,26 @@ class AgainstHerdr(unittest.TestCase):
         self.assertNotIn(NAME, [g["session"] for g in state["groups"]], "a temporary session's question was listed")
         self.assertNotIn(NAME, state["hosts"][0]["sessions"])
 
+    def test_9_an_agent_waiting_on_its_own_work_isnt_listed(self):
+        # A pane carrying ark_waiting=<what> (ark-sdlc's pinboard tool, for a child intent waiting on
+        # its reviewers) isn't listed while it's finished; asking, or once the token's off, it is.
+        # A pane of its own, never looked at, so herdr calls its finish done.
+        pane = call("workspace.create", {"label": "child", "focus": False})["root_pane"]["pane_id"]
+        report(pane, "working")
+        report(pane, "idle")
+        self.assertEqual(listing().get(pane), "finished")
+        call("pane.report_metadata", {"pane_id": pane, "source": "herdr-dot-test",
+                                      "tokens": {"ark_waiting": "Codex's review"}})
+        self.assertNotIn(pane, listing(), "an agent waiting on its own work was listed as finished")
+        report(pane, "working")
+        report(pane, "blocked")
+        self.assertEqual(listing().get(pane), "blocked", "its question wasn't listed")
+        report(pane, "working")
+        report(pane, "idle")
+        self.assertNotIn(pane, listing())
+        call("pane.report_metadata", {"pane_id": pane, "source": "herdr-dot-test", "tokens": {"ark_waiting": None}})
+        self.assertEqual(listing().get(pane), "finished", "it didn't come back once the token came off")
+        call("pane.close", {"pane_id": pane})
 
 if __name__ == "__main__":
     unittest.main()

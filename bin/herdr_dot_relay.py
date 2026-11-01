@@ -136,6 +136,7 @@ def read_session(path):
             "watched_by": (pane.get("tokens") or {}).get("watched_by"),
             "role": (pane.get("tokens") or {}).get("role"),
             "child": (pane.get("tokens") or {}).get("ark_child"),
+            "waiting_on": (pane.get("tokens") or {}).get("ark_waiting"),
         })
     return focus, agents, terminals
 
